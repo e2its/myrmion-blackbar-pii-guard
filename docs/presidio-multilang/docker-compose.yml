@@ -1,0 +1,10 @@
+services:
+  presidio-analyzer:
+    build:
+      context: .
+      args:
+        MODEL_SIZE: lg          # set to "md" for a much smaller image
+    image: e2its/presidio-analyzer-multilang:latest
+    ports:
+      - "5002:3000"             # blackbar talks to http://localhost:5002
+    restart: unless-stopped

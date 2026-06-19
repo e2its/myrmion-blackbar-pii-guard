@@ -13,7 +13,11 @@
 
 services:
   presidio-analyzer:
-    image: mcr.microsoft.com/presidio-analyzer:latest
+    # Multilingual analyzer (en, es, pt, fr, de, it + Spanish DNI/NIE).
+    # `docker compose up` pulls it from Docker Hub once it's published. To build
+    # it yourself instead, see ../../docs/presidio-multilang/. For English only,
+    # swap this line for: mcr.microsoft.com/presidio-analyzer:latest
+    image: e2its/presidio-analyzer-multilang:latest
     ports:
       - "5002:3000"
     restart: unless-stopped
