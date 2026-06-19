@@ -16,5 +16,8 @@ Steps:
 3. Call `presidio_anonymize` with the text and operator.
 4. Return the anonymized text in a copyable code block, and list which entity
    types were transformed.
+5. If the operator was `encrypt`, remind the user the result is reversible with
+   `/blackbar:decrypt` (or the `presidio_decrypt` tool) **only** with the same
+   key — so they must keep the key. The other operators are one-way.
 
 Never store, log, or repeat the original PII values once anonymized.

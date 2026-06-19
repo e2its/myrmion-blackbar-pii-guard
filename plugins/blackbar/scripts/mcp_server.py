@@ -25,11 +25,13 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bb_crypto  # noqa: E402
 from presidio_client import (  # noqa: E402
     Config,
     PresidioClient,
     PresidioUnavailable,
     _apply_operator,
+    _resolve_overlaps,
 )
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -62,7 +64,10 @@ TOOLS = [
         "description": (
             "Return a copy of the text with PII removed using the chosen "
             "operator: replace (<EMAIL_ADDRESS>), redact (delete), mask "
-            "(****1234), hash, or encrypt (reversible, requires a key)."
+            "(****1234), hash, or encrypt. Only encrypt is reversible: it emits "
+            "self-contained <ENC:TYPE:...> tokens that presidio_decrypt turns "
+            "back into the originals with the same key. The other operators are "
+            "one-way."
         ),
         "inputSchema": {
             "type": "object",
@@ -81,6 +86,29 @@ TOOLS = [
                 },
             },
             "required": ["text"],
+        },
+    },
+    {
+        "name": "presidio_decrypt",
+        "description": (
+            "Reverse a previous encrypt: find every <ENC:TYPE:...> token in the "
+            "text and restore the original value using the same key. Needs only "
+            "the text and the key — no spans, no Presidio service. Tokens that "
+            "fail to authenticate (wrong key or tampered) are left untouched."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "Text containing <ENC:...> tokens to restore.",
+                },
+                "key": {
+                    "type": "string",
+                    "description": "The same key used when the text was encrypted.",
+                },
+            },
+            "required": ["text", "key"],
         },
     },
 ]
@@ -133,22 +161,26 @@ def tool_anonymize(args: dict) -> str:
 def _anonymize_encrypt(client: PresidioClient, text: str, key: str) -> str:
     if not key:
         return json.dumps({"error": "operator=encrypt requires a 'key'."})
-    try:
-        from presidio_anonymizer import AnonymizerEngine
-        from presidio_anonymizer.entities import OperatorConfig, RecognizerResult
-    except ImportError:
-        return json.dumps(
-            {"error": "encrypt requires `pip install presidio-anonymizer`."}
-        )
     spans = client.analyze(text)
-    results = [RecognizerResult(s.entity_type, s.start, s.end, s.score) for s in spans]
-    engine = AnonymizerEngine()
-    out = engine.anonymize(
-        text=text,
-        analyzer_results=results,
-        operators={"DEFAULT": OperatorConfig("encrypt", {"key": key})},
+    # Apply right-to-left so earlier offsets stay valid as tokens change length.
+    encrypted = bb_crypto.encrypt_spans(text, _resolve_overlaps(spans), key)
+    return json.dumps(
+        {
+            "text": encrypted,
+            "entities_found": sorted({s.entity_type for s in spans}),
+            "note": "reversible: call presidio_decrypt with the same key",
+        },
+        indent=2,
     )
-    return json.dumps({"text": out.text, "note": "reversible with the same key"}, indent=2)
+
+
+def tool_decrypt(args: dict) -> str:
+    text = args.get("text", "")
+    key = args.get("key", "")
+    if not key:
+        return json.dumps({"error": "presidio_decrypt requires a 'key'."})
+    restored, count = bb_crypto.decrypt_text(text, key)
+    return json.dumps({"text": restored, "restored": count}, indent=2)
 
 
 def _dispatch_tool(name: str, args: dict) -> dict:
@@ -157,6 +189,8 @@ def _dispatch_tool(name: str, args: dict) -> dict:
             text = tool_analyze(args)
         elif name == "presidio_anonymize":
             text = tool_anonymize(args)
+        elif name == "presidio_decrypt":
+            text = tool_decrypt(args)
         else:
             return {"content": [{"type": "text", "text": f"Unknown tool: {name}"}], "isError": True}
         return {"content": [{"type": "text", "text": text}]}

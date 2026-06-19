@@ -2,16 +2,18 @@
 
 The on-demand half of blackbar, packaged as a one-click Claude Desktop
 extension (`.mcpb`). Zero dependencies — a small Node server that ships with the
-bundle. It adds two tools:
+bundle. It adds three tools:
 
 - `presidio_analyze` — find PII in text (types, spans, scores)
 - `presidio_anonymize` — replace / mask / hash / redact / encrypt it
+- `presidio_decrypt` — restore values that were encrypted, with the same key
 
 ## What carries over from the Claude Code plugin — and what doesn't
 
 | Capability | Claude Code | Claude Desktop |
 | --- | --- | --- |
-| `presidio_analyze` / `presidio_anonymize` tools (MCP) | yes | **yes** |
+| `presidio_analyze` / `presidio_anonymize` / `presidio_decrypt` tools (MCP) | yes | **yes** |
+| Reversible `encrypt` + `presidio_decrypt` (shared token format) | yes | **yes** |
 | Automatic redaction of tool results (`PostToolUse` hook) | yes | no |
 | Prompt / egress / display guards (hooks) | yes | no |
 
@@ -29,10 +31,8 @@ inside the desktop app and install the Claude Code plugin there.
   ```bash
   docker run -d -p 5002:3000 mcr.microsoft.com/presidio-analyzer:latest
   ```
-- Optional: a Presidio Anonymizer (only for the reversible `encrypt` operator):
-  ```bash
-  docker run -d -p 5001:3000 mcr.microsoft.com/presidio-anonymizer:latest
-  ```
+- Nothing else: the reversible `encrypt`/`presidio_decrypt` operators use Node's
+  built-in crypto, so **no Presidio Anonymizer service is required**.
 
 ## Install (one click)
 

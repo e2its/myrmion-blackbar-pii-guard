@@ -15,8 +15,16 @@ tools, so personal data is caught at the boundaries where it matters.
 | Tool result | `PostToolUse` (`Read`, `Bash`, `WebFetch`, `Grep`, `Glob`) | **Redact** PII in the result before the model sees it (`updatedToolOutput`) | on |
 | On screen | `MessageDisplay` | **Redact** PII from displayed text (display only) | off |
 
-Plus an MCP server with `presidio_analyze` and `presidio_anonymize`, and the
-slash commands `/blackbar:scan` and `/blackbar:anonymize`.
+Plus an MCP server with `presidio_analyze`, `presidio_anonymize`, and
+`presidio_decrypt`, and the slash commands `/blackbar:scan`,
+`/blackbar:anonymize`, and `/blackbar:decrypt`.
+
+The `encrypt` operator is reversible and **needs no extra dependencies**: it
+emits self-contained `<ENC:TYPE:...>` tokens (a salt, nonce, ciphertext, and
+HMAC tag, all base64url) using only the Python standard library, and
+`presidio_decrypt` restores them with the same key. The same token format is
+shared with the Claude Desktop server, so a value encrypted in one decrypts in
+the other.
 
 > The strongest, safest win is `PostToolUse`: it scrubs PII out of what the
 > model ingests **without changing the file on disk or what your command

@@ -3,8 +3,8 @@
   "name": "blackbar",
   "display_name": "blackbar",
   "version": "0.1.0",
-  "description": "On-demand PII detection and anonymization with Microsoft Presidio.",
-  "long_description": "Adds two tools to Claude Desktop: presidio_analyze (find PII in text) and presidio_anonymize (replace, mask, hash, redact, or encrypt it). A zero-dependency Node server talks to a local Presidio Analyzer over HTTP, so detection runs entirely on your machine and the bundle needs no extra install. Note: this is the on-demand half of blackbar; the automatic redaction hooks only exist in Claude Code.",
+  "description": "On-demand PII detection, anonymization, and reversible encryption with Microsoft Presidio.",
+  "long_description": "Adds three tools to Claude Desktop: presidio_analyze (find PII in text), presidio_anonymize (replace, mask, hash, redact, or reversibly encrypt it), and presidio_decrypt (restore values that were encrypted, with the same key). A zero-dependency Node server talks to a local Presidio Analyzer over HTTP; detection runs entirely on your machine and encryption uses Node's built-in crypto, so the bundle needs no extra install or anonymizer service. Note: this is the on-demand half of blackbar; the automatic redaction hooks only exist in Claude Code.",
   "author": { "name": "e2its" },
   "repository": { "type": "git", "url": "https://github.com/e2its/blackbar-pii-guard.git" },
   "license": "MIT",
@@ -17,7 +17,6 @@
       "args": ["${__dirname}/server/index.js"],
       "env": {
         "PRESIDIO_ANALYZER_URL": "${user_config.analyzer_url}",
-        "PRESIDIO_ANONYMIZER_URL": "${user_config.anonymizer_url}",
         "PRESIDIO_GUARD_OPERATOR": "${user_config.default_operator}",
         "PRESIDIO_GUARD_LANGUAGE": "${user_config.language}"
       }
@@ -25,7 +24,8 @@
   },
   "tools": [
     { "name": "presidio_analyze", "description": "Detect PII in text and return entity types, spans, and scores." },
-    { "name": "presidio_anonymize", "description": "Return a copy of the text with PII replaced, masked, hashed, redacted, or encrypted." }
+    { "name": "presidio_anonymize", "description": "Return a copy of the text with PII replaced, masked, hashed, redacted, or reversibly encrypted." },
+    { "name": "presidio_decrypt", "description": "Restore values previously encrypted by presidio_anonymize, using the same key." }
   ],
   "compatibility": {
     "claude_desktop": ">=0.10.0",
@@ -34,8 +34,7 @@
   },
   "user_config": {
     "analyzer_url": { "type": "string", "title": "Presidio Analyzer URL", "description": "Endpoint of your local Presidio Analyzer service.", "default": "http://localhost:5002", "required": false },
-    "anonymizer_url": { "type": "string", "title": "Presidio Anonymizer URL (optional)", "description": "Only needed for the reversible 'encrypt' operator.", "default": "", "required": false },
-    "default_operator": { "type": "string", "title": "Default anonymization operator", "description": "replace, redact, mask, or hash.", "default": "replace", "required": false },
+    "default_operator": { "type": "string", "title": "Default anonymization operator", "description": "replace, redact, mask, hash, or encrypt.", "default": "replace", "required": false },
     "language": { "type": "string", "title": "Detection language", "description": "Language code such as en or es.", "default": "en", "required": false }
   }
 }

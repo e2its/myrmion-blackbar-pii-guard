@@ -2,9 +2,10 @@
 /*
  * index.js — Presidio MCP server (Node, zero dependencies)
  * ========================================================
- * A stdio JSON-RPC 2.0 MCP server exposing two tools:
+ * A stdio JSON-RPC 2.0 MCP server exposing three tools:
  *   presidio_analyze    -> detect PII entities in text
  *   presidio_anonymize  -> replace / redact / mask / hash / encrypt PII
+ *   presidio_decrypt    -> reverse encrypt: restore <ENC:...> tokens with the key
  *
  * Why Node: Claude Desktop bundles a Node runtime, so a node-type .mcpb needs
  * no Python and no extra install. This file uses only Node built-ins
@@ -12,13 +13,12 @@
  * node_modules.
  *
  * Detection is delegated to a local Presidio Analyzer HTTP service. The
- * replace/redact/mask/hash operators are applied locally, so only the analyzer
- * service is required. The optional `encrypt` operator calls a Presidio
- * Anonymizer service when PRESIDIO_ANONYMIZER_URL is set.
+ * replace/redact/mask/hash operators and the reversible encrypt/decrypt are all
+ * applied locally (encrypt uses Node's built-in crypto, no anonymizer service),
+ * so only the analyzer service is required.
  *
  * Configuration (env vars):
  *   PRESIDIO_ANALYZER_URL     default http://localhost:5002
- *   PRESIDIO_ANONYMIZER_URL   optional, enables encrypt (e.g. http://localhost:5001)
  *   PRESIDIO_GUARD_OPERATOR   default replace
  *   PRESIDIO_GUARD_LANGUAGE   default en
  *   PRESIDIO_GUARD_THRESHOLD  default 0.5
@@ -36,7 +36,6 @@ const SERVER_INFO = { name: "blackbar", version: "0.1.0" };
 
 const CFG = {
   analyzerUrl: env("PRESIDIO_ANALYZER_URL", "http://localhost:5002"),
-  anonymizerUrl: env("PRESIDIO_ANONYMIZER_URL", ""),
   operator: env("PRESIDIO_GUARD_OPERATOR", "replace"),
   language: env("PRESIDIO_GUARD_LANGUAGE", "en"),
   threshold: parseFloat(env("PRESIDIO_GUARD_THRESHOLD", "0.5")),
@@ -74,7 +73,7 @@ const TOOLS = [
   {
     name: "presidio_anonymize",
     description:
-      "Return a copy of the text with PII removed using the chosen operator: replace (<EMAIL_ADDRESS>), redact (delete), mask (****1234), hash, or encrypt (reversible, requires anonymizer service + key).",
+      "Return a copy of the text with PII removed using the chosen operator: replace (<EMAIL_ADDRESS>), redact (delete), mask (****1234), hash, or encrypt. Only encrypt is reversible: it emits self-contained <ENC:TYPE:...> tokens that presidio_decrypt turns back into the originals with the same key. The other operators are one-way.",
     inputSchema: {
       type: "object",
       properties: {
@@ -86,9 +85,22 @@ const TOOLS = [
         },
         language: { type: "string" },
         entities: { type: "array", items: { type: "string" } },
-        key: { type: "string", description: "Encryption key (operator=encrypt only)." },
+        key: { type: "string", description: "Encryption key (required only for operator=encrypt)." },
       },
       required: ["text"],
+    },
+  },
+  {
+    name: "presidio_decrypt",
+    description:
+      "Reverse a previous encrypt: find every <ENC:TYPE:...> token in the text and restore the original value using the same key. Needs only the text and the key — no spans, no Presidio service. Tokens that fail to authenticate (wrong key or tampered) are left untouched.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "Text containing <ENC:...> tokens to restore." },
+        key: { type: "string", description: "The same key used when the text was encrypted." },
+      },
+      required: ["text", "key"],
     },
   },
 ];
@@ -175,29 +187,120 @@ function applyOperator(text, spans, operator) {
   return out;
 }
 
-async function encryptViaService(text, spans, key) {
-  if (!CFG.anonymizerUrl) {
-    return { error: "encrypt requires PRESIDIO_ANONYMIZER_URL to be set." };
+// --------------------------------------------------------------------------- //
+// Reversible encryption — self-describing <ENC:TYPE:payload> tokens.
+//
+// This mirrors plugins/blackbar/scripts/bb_crypto.py byte-for-byte, so a token
+// produced in Claude Code decrypts here and vice-versa. Zero dependencies: only
+// Node's built-in `crypto`. No Presidio Anonymizer service required.
+//
+//   payload bytes = MAGIC(1) | salt(16) | nonce(12) | ciphertext(N) | tag(16)
+//   dk        = PBKDF2-HMAC-SHA256(key, salt, ITERATIONS, 64)
+//   keystream = HMAC-SHA256(dk[:32], nonce || be32(i)) for i = 0,1,...
+//   tag       = HMAC-SHA256(dk[32:], MAGIC || salt || nonce || ciphertext)[:16]
+// --------------------------------------------------------------------------- //
+const MAGIC = Buffer.from([0x01]);
+const ITERATIONS = 200000;
+const SALT_LEN = 16;
+const NONCE_LEN = 12;
+const TAG_LEN = 16;
+const TOKEN_RE = /<ENC:([A-Z0-9_]+):([A-Za-z0-9_-]+)>/g;
+
+const _deriveCache = new Map();
+function derive(key, salt) {
+  const ck = key + "|" + salt.toString("hex");
+  let v = _deriveCache.get(ck);
+  if (!v) {
+    const dk = crypto.pbkdf2Sync(key, salt, ITERATIONS, 64, "sha256");
+    v = { encKey: dk.subarray(0, 32), macKey: dk.subarray(32) };
+    _deriveCache.set(ck, v);
   }
+  return v;
+}
+
+function keystream(encKey, nonce, length) {
+  const chunks = [];
+  let got = 0;
+  let counter = 0;
+  while (got < length) {
+    const ctr = Buffer.alloc(4);
+    ctr.writeUInt32BE(counter >>> 0, 0);
+    const block = crypto.createHmac("sha256", encKey).update(Buffer.concat([nonce, ctr])).digest();
+    chunks.push(block);
+    got += block.length;
+    counter++;
+  }
+  return Buffer.concat(chunks).subarray(0, length);
+}
+
+function xorBuf(a, b) {
+  const out = Buffer.alloc(a.length);
+  for (let i = 0; i < a.length; i++) out[i] = a[i] ^ b[i];
+  return out;
+}
+
+function encryptValue(plaintext, key, salt) {
+  salt = salt || crypto.randomBytes(SALT_LEN);
+  const nonce = crypto.randomBytes(NONCE_LEN);
+  const { encKey, macKey } = derive(key, salt);
+  const pt = Buffer.from(plaintext, "utf8");
+  const ct = xorBuf(pt, keystream(encKey, nonce, pt.length));
+  const tag = crypto
+    .createHmac("sha256", macKey)
+    .update(Buffer.concat([MAGIC, salt, nonce, ct]))
+    .digest()
+    .subarray(0, TAG_LEN);
+  return Buffer.concat([MAGIC, salt, nonce, ct, tag]).toString("base64url");
+}
+
+function decryptValue(payload, key) {
+  const raw = Buffer.from(payload, "base64url");
+  if (raw.length < 1 + SALT_LEN + NONCE_LEN + TAG_LEN || raw[0] !== 0x01) {
+    throw new Error("unrecognized token");
+  }
+  const salt = raw.subarray(1, 1 + SALT_LEN);
+  const nonce = raw.subarray(1 + SALT_LEN, 1 + SALT_LEN + NONCE_LEN);
+  const tag = raw.subarray(raw.length - TAG_LEN);
+  const ct = raw.subarray(1 + SALT_LEN + NONCE_LEN, raw.length - TAG_LEN);
+  const { encKey, macKey } = derive(key, salt);
+  const expected = crypto
+    .createHmac("sha256", macKey)
+    .update(Buffer.concat([MAGIC, salt, nonce, ct]))
+    .digest()
+    .subarray(0, TAG_LEN);
+  if (expected.length !== tag.length || !crypto.timingSafeEqual(expected, tag)) {
+    throw new Error("authentication failed (wrong key or corrupted token)");
+  }
+  return xorBuf(ct, keystream(encKey, nonce, ct.length)).toString("utf8");
+}
+
+function encryptText(text, spans, key) {
   if (!key) return { error: "operator=encrypt requires a 'key'." };
-  const body = {
-    text,
-    anonymizers: { DEFAULT: { type: "encrypt", key } },
-    analyzer_results: spans.map((s) => ({
-      entity_type: s.entity_type,
-      start: s.start,
-      end: s.end,
-      score: s.score,
-    })),
+  const salt = crypto.randomBytes(SALT_LEN);
+  let out = text;
+  for (const s of resolveOverlaps(spans)) {
+    const original = out.slice(s.start, s.end);
+    out = out.slice(0, s.start) + `<ENC:${s.entity_type}:${encryptValue(original, key, salt)}>` + out.slice(s.end);
+  }
+  return {
+    text: out,
+    entities_found: [...new Set(spans.map((s) => s.entity_type))].sort(),
+    note: "reversible: call presidio_decrypt with the same key",
   };
-  const res = await fetch(CFG.anonymizerUrl.replace(/\/+$/, "") + "/anonymize", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+}
+
+function decryptText(text, key) {
+  let count = 0;
+  const out = text.replace(TOKEN_RE, (m, _type, payload) => {
+    try {
+      const value = decryptValue(payload, key);
+      count++;
+      return value;
+    } catch {
+      return m;
+    }
   });
-  if (!res.ok) return { error: `anonymizer returned HTTP ${res.status}` };
-  const data = await res.json();
-  return { text: data.text, note: "reversible with the same key" };
+  return { text: out, restored: count };
 }
 
 // --------------------------------------------------------------------------- //
@@ -221,7 +324,7 @@ async function toolAnonymize(args) {
   const text = args.text || "";
   const spans = await analyze(text, args.language, args.entities);
   if (operator === "encrypt") {
-    return JSON.stringify(await encryptViaService(text, spans, args.key || ""), null, 2);
+    return JSON.stringify(encryptText(text, spans, args.key || ""), null, 2);
   }
   const redacted = applyOperator(text, spans, operator);
   return JSON.stringify(
@@ -231,11 +334,19 @@ async function toolAnonymize(args) {
   );
 }
 
+function toolDecrypt(args) {
+  const text = args.text || "";
+  const key = args.key || "";
+  if (!key) return JSON.stringify({ error: "presidio_decrypt requires a 'key'." }, null, 2);
+  return JSON.stringify(decryptText(text, key), null, 2);
+}
+
 async function dispatchTool(name, args) {
   try {
     let text;
     if (name === "presidio_analyze") text = await toolAnalyze(args);
     else if (name === "presidio_anonymize") text = await toolAnonymize(args);
+    else if (name === "presidio_decrypt") text = toolDecrypt(args);
     else return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
     return { content: [{ type: "text", text }] };
   } catch (err) {
@@ -293,4 +404,7 @@ function main() {
   });
 }
 
-main();
+// Run the server only when executed directly, so the crypto can be unit-tested.
+if (require.main === module) main();
+
+module.exports = { encryptValue, decryptValue, encryptText, decryptText };

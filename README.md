@@ -76,8 +76,15 @@ Details in [`desktop/README.md`](desktop/README.md).
 | --- | --- |
 | `presidio_analyze(text, language?, entities?)` | find PII: types, spans, scores |
 | `presidio_anonymize(text, operator?, key?)` | `replace` · `redact` · `mask` · `hash` · `encrypt` |
+| `presidio_decrypt(text, key)` | reverse `encrypt`: restore `<ENC:…>` tokens with the same key |
 
-Slash commands in Claude Code: `/blackbar:scan` and `/blackbar:anonymize`.
+Only `encrypt` is reversible — it emits self-contained `<ENC:TYPE:…>` tokens
+(zero extra dependencies on either client) that `presidio_decrypt` turns back
+into the originals with the same key; the same token decrypts in both Claude
+Code and Claude Desktop. The other operators are one-way.
+
+Slash commands in Claude Code: `/blackbar:scan`, `/blackbar:anonymize`, and
+`/blackbar:decrypt`.
 
 ## Repo layout
 
