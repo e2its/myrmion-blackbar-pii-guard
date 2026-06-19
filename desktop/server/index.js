@@ -32,7 +32,7 @@ const readline = require("readline");
 const crypto = require("crypto");
 
 const PROTOCOL_VERSION = "2024-11-05";
-const SERVER_INFO = { name: "blackbar", version: "0.1.0" };
+const SERVER_INFO = { name: "blackbar", version: "0.2.0" };
 
 const CFG = {
   analyzerUrl: env("PRESIDIO_ANALYZER_URL", "http://localhost:5002"),

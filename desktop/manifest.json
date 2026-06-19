@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "blackbar",
   "display_name": "blackbar",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "On-demand PII detection, anonymization, and reversible encryption with Microsoft Presidio.",
   "long_description": "Adds three tools to Claude Desktop: presidio_analyze (find PII in text), presidio_anonymize (replace, mask, hash, redact, or reversibly encrypt it), and presidio_decrypt (restore values that were encrypted, with the same key). A zero-dependency Node server talks to a local Presidio Analyzer over HTTP; detection runs entirely on your machine and encryption uses Node's built-in crypto, so the bundle needs no extra install or anonymizer service. Note: this is the on-demand half of blackbar; the automatic redaction hooks only exist in Claude Code.",
   "author": { "name": "e2its" },

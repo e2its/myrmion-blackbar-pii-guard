@@ -1,7 +1,7 @@
 {
   "name": "blackbar",
   "description": "Detect and redact PII with Microsoft Presidio across Claude Code and Claude for VS Code: scrubs tool results before the model sees them, gates outbound requests, and exposes analyze/anonymize tools.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "e2its"
   },
