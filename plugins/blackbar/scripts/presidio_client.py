@@ -95,30 +95,42 @@ class PresidioClient:
             return text, []
         return _apply_operator(text, spans, self.cfg.operator), spans
 
-    def redact_structure(self, value: Any) -> tuple[Any, int]:
-        """Recursively redact every string leaf in a JSON-like structure.
-
-        Returns (redacted_value, number_of_entities_found).
-        """
-        count = 0
+    def map_strings(self, value: Any, transform) -> tuple[Any, int]:
+        """Recursively apply ``transform`` to every string leaf in a JSON-like
+        structure. ``transform`` takes a string and returns (new_string, count).
+        Returns (new_value, total_count). This is the shared walker behind both
+        one-way redaction and reversible encryption."""
         if isinstance(value, str):
-            new, spans = self.redact(value)
-            return new, len(spans)
+            return transform(value)
         if isinstance(value, dict):
             out: dict[Any, Any] = {}
+            count = 0
             for k, v in value.items():
-                nv, c = self.redact_structure(v)
+                nv, c = self.map_strings(v, transform)
                 out[k] = nv
                 count += c
             return out, count
         if isinstance(value, list):
             out_list = []
+            count = 0
             for v in value:
-                nv, c = self.redact_structure(v)
+                nv, c = self.map_strings(v, transform)
                 out_list.append(nv)
                 count += c
             return out_list, count
         return value, 0
+
+    def redact_structure(self, value: Any) -> tuple[Any, int]:
+        """Recursively redact every string leaf in a JSON-like structure.
+
+        Returns (redacted_value, number_of_entities_found).
+        """
+
+        def _transform(text: str) -> tuple[str, int]:
+            new, spans = self.redact(text)
+            return new, len(spans)
+
+        return self.map_strings(value, _transform)
 
     # -- service backend --------------------------------------------------- #
     def _analyze_service(self, text: str) -> list[Span]:

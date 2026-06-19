@@ -50,34 +50,13 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bb_crypto  # noqa: E402
+import bb_key  # noqa: E402
 from presidio_client import (  # noqa: E402
     Config,
     PresidioClient,
     PresidioUnavailable,
     _resolve_overlaps,
 )
-
-
-def _default_key_file() -> Path:
-    env = os.environ.get("BLACKBAR_KEY_FILE")
-    if env:
-        return Path(env).expanduser()
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
-        os.path.expanduser("~"), ".config"
-    )
-    return Path(base) / "blackbar" / "key"
-
-
-def _resolve_key(arg_key: str | None) -> str | None:
-    if arg_key:
-        return arg_key
-    env = os.environ.get("BLACKBAR_KEY")
-    if env:
-        return env
-    kf = _default_key_file()
-    if kf.is_file():
-        return kf.read_text(encoding="utf-8").strip()
-    return None
 
 
 def _err(msg: str) -> None:
@@ -101,7 +80,7 @@ def _client(args) -> PresidioClient:
 # Commands
 # --------------------------------------------------------------------------- #
 def cmd_keygen(args) -> int:
-    kf = Path(args.out).expanduser() if args.out else _default_key_file()
+    kf = Path(args.out).expanduser() if args.out else bb_key.default_key_file()
     if kf.exists() and not args.force:
         _err(f"key file already exists: {kf} (use --force to overwrite)")
         return 1
@@ -115,7 +94,7 @@ def cmd_keygen(args) -> int:
 
 
 def cmd_enc(args) -> int:
-    key = _resolve_key(args.key)
+    key = bb_key.resolve_key(args.key)
     if not key:
         _err("no key found. Run `blackbar keygen`, set $BLACKBAR_KEY, or pass --key")
         return 2
@@ -137,7 +116,7 @@ def cmd_enc(args) -> int:
 
 
 def cmd_dec(args) -> int:
-    key = _resolve_key(args.key)
+    key = bb_key.resolve_key(args.key)
     if not key:
         _err("no key found. Set $BLACKBAR_KEY, pass --key, or create a key file")
         return 2

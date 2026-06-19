@@ -26,6 +26,22 @@ HMAC tag, all base64url) using only the Python standard library, and
 shared with the Claude Desktop server, so a value encrypted in one decrypts in
 the other.
 
+### Reversible tool-result encryption (`PostToolUse`)
+
+Set `PRESIDIO_GUARD_RESULT_MODE=encrypt` (plus a key via `blackbar keygen` or
+`BLACKBAR_KEY`) and tool results reach the model as reversible `<ENC:…>` tokens
+instead of one-way placeholders — restore them locally with `/blackbar:decrypt`
+or `blackbar dec`. Without a key it safely falls back to one-way redaction.
+
+### Any interface (subscription-friendly): the `blackbar` CLI
+
+`bin/blackbar` is an interface-agnostic CLI (`enc` / `dec` / `scan` / `keygen`)
+that anonymizes text before it enters *any* app and restores it after — bind it
+to a clipboard hotkey and it works in the Claude Chrome extension, claude.ai
+web, Office, Claude Desktop, and Claude Code alike. It never touches your login
+token or proxies traffic, so it is safe on a Pro/Max subscription. See
+[`../../docs/clipboard.md`](../../docs/clipboard.md).
+
 > The strongest, safest win is `PostToolUse`: it scrubs PII out of what the
 > model ingests **without changing the file on disk or what your command
 > actually ran**. The prompt boundary can only warn or block — Claude Code
@@ -88,7 +104,9 @@ All behavior is controlled by environment variables:
 | `PRESIDIO_GUARD_ENTITIES` | comma list | (all) | Restrict to specific entity types |
 | `PRESIDIO_GUARD_PROMPT_POLICY` | `warn`, `block`, `off` | `warn` | Prompt boundary behavior |
 | `PRESIDIO_GUARD_EGRESS_POLICY` | `ask`, `block`, `warn`, `off` | `ask` | Outbound request behavior |
-| `PRESIDIO_GUARD_RESULT_REDACTION` | `on`, `off` | `on` | Redact tool results |
+| `PRESIDIO_GUARD_RESULT_REDACTION` | `on`, `off` | `on` | Scrub tool results before the model sees them |
+| `PRESIDIO_GUARD_RESULT_MODE` | `redact`, `encrypt` | `redact` | `redact` = one-way placeholders; `encrypt` = reversible `<ENC:…>` tokens (needs a key) |
+| `BLACKBAR_KEY` / `BLACKBAR_KEY_FILE` | string / path | — / `~/.config/blackbar/key` | Session key for `encrypt` mode and the `blackbar` CLI. Create one with `blackbar keygen`. |
 | `PRESIDIO_GUARD_DISPLAY_REDACTION` | `on`, `off` | `off` | Redact on-screen text |
 | `PRESIDIO_GUARD_FAIL` | `open`, `closed` | `open` | Behavior when Presidio is unreachable |
 

@@ -16,10 +16,16 @@ Per-event behaviour (all configurable via env vars):
                     a URL or query would leave the machine, so we ask or deny.
                     PRESIDIO_GUARD_EGRESS_POLICY = ask | block | warn | off (ask)
 
-  PostToolUse       redact PII inside the tool RESULT before the model sees it,
+  PostToolUse       scrub PII inside the tool RESULT before the model sees it,
                     via updatedToolOutput. The file/command output on disk is
                     untouched -- only what reaches the model is scrubbed.
                     PRESIDIO_GUARD_RESULT_REDACTION = on | off          (on)
+                    PRESIDIO_GUARD_RESULT_MODE = redact | encrypt   (redact)
+                      redact  -> one-way <EMAIL_ADDRESS> placeholders
+                      encrypt -> reversible <ENC:TYPE:...> tokens (needs a key
+                                 from BLACKBAR_KEY / `blackbar keygen`; restore
+                                 with /blackbar:decrypt or `blackbar dec`).
+                                 Falls back to redact if no key is found.
 
   MessageDisplay    redact PII from the on-screen assistant text (display only).
                     PRESIDIO_GUARD_DISPLAY_REDACTION = on | off         (off)
@@ -36,7 +42,14 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from presidio_client import PresidioClient, PresidioUnavailable, Span  # noqa: E402
+import bb_crypto  # noqa: E402
+import bb_key  # noqa: E402
+from presidio_client import (  # noqa: E402
+    PresidioClient,
+    PresidioUnavailable,
+    Span,
+    _resolve_overlaps,
+)
 
 EGRESS_TOOLS = {"WebFetch", "WebSearch"}
 
@@ -149,7 +162,42 @@ def handle_post_tool_use(data: dict, client: PresidioClient) -> None:
     response = data.get("tool_response", None)
     if response is None:
         sys.exit(0)
-    redacted, count = client.redact_structure(response)
+
+    # redact (one-way, default) or encrypt (reversible tokens) the tool result.
+    mode = _env("PRESIDIO_GUARD_RESULT_MODE", "redact")
+    key = bb_key.resolve_key(None) if mode == "encrypt" else None
+
+    if mode == "encrypt" and key:
+        def _transform(text: str) -> tuple[str, int]:
+            spans = client.analyze(text)
+            if not spans:
+                return text, 0
+            resolved = _resolve_overlaps(spans)
+            return bb_crypto.encrypt_spans(text, resolved, key), len(resolved)
+
+        redacted, count = client.map_strings(response, _transform)
+        note = (
+            f"[blackbar] encrypted {count} PII value(s) in this tool result "
+            "before you received it, as reversible <ENC:TYPE:...> tokens. "
+            "Restore them locally with /blackbar:decrypt or `blackbar dec` "
+            "(same key); do not attempt to guess the originals."
+        )
+    else:
+        if mode == "encrypt" and not key:
+            # Reversibility was requested but no key is available. Never leak by
+            # doing nothing: fall back to one-way redaction and say so.
+            sys.stderr.write(
+                "[blackbar] PRESIDIO_GUARD_RESULT_MODE=encrypt but no key found "
+                "(run `blackbar keygen` or set BLACKBAR_KEY); using one-way "
+                "redaction for this result.\n"
+            )
+        redacted, count = client.redact_structure(response)
+        note = (
+            f"[blackbar] redacted {count} PII value(s) from this tool result "
+            "before you received it. Placeholders like <EMAIL_ADDRESS> stand "
+            "in for the originals."
+        )
+
     if count == 0:
         sys.exit(0)
     output = redacted if isinstance(redacted, str) else json.dumps(redacted)
@@ -159,11 +207,7 @@ def handle_post_tool_use(data: dict, client: PresidioClient) -> None:
             "hookSpecificOutput": {
                 "hookEventName": "PostToolUse",
                 "updatedToolOutput": output,
-                "additionalContext": (
-                    f"[blackbar] redacted {count} PII value(s) from this "
-                    "tool result before you received it. Placeholders like "
-                    "<EMAIL_ADDRESS> stand in for the originals."
-                ),
+                "additionalContext": note,
             },
         }
     )

@@ -1,0 +1,8 @@
+#!/usr/bin/env sh
+# blackbar — launcher for the local PII anonymize/de-anonymize CLI.
+#
+# Put this directory on your PATH (or symlink this file into ~/.local/bin) so
+# you can run `blackbar enc|dec|scan|keygen` from anywhere — shells, pipes, and
+# OS clipboard hotkeys. See docs/clipboard.md for hotkey recipes.
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec python3 "$here/../plugins/blackbar/scripts/blackbar_cli.py" "$@"
