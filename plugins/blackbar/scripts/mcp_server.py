@@ -148,10 +148,11 @@ def tool_anonymize(args: dict) -> str:
     if operator == "encrypt":
         return _anonymize_encrypt(client, text, args.get("key", ""))
 
-    redacted, spans = client.redact(text) if operator == client.cfg.operator else (
-        _apply_operator(text, client.analyze(text), operator),
-        client.analyze(text),
-    )
+    # Detect once, then apply the requested operator to those spans -- never
+    # re-analyze (a second analyze() means a second service round-trip and a
+    # duplicate audit record for the same input).
+    spans = client.analyze(text)
+    redacted = _apply_operator(text, spans, operator)
     return json.dumps(
         {"text": redacted, "entities_found": sorted({s.entity_type for s in spans})},
         indent=2,

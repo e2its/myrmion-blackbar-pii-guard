@@ -212,7 +212,7 @@ class Handler(BaseHTTPRequestHandler):
         lang = os.environ.get("PRESIDIO_GUARD_LANGUAGE")
         if lang:
             cfg.language = lang
-        return PresidioClient(cfg)
+        return PresidioClient(cfg, source="proxy")
 
     def _upstream_headers(self) -> dict:
         return {

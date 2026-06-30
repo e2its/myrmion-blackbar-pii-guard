@@ -195,7 +195,12 @@ def health():
 
 def _explain(r):
     """PII-safe slice of Presidio's decision process: which recognizer fired
-    and which named pattern. Never the matched value. None if unavailable."""
+    and which named pattern. Never the matched value. None if unavailable.
+
+    Mirrored by ``presidio_client._explain`` on the client side; this service
+    is a standalone artifact (own venv/Docker image) so the two cannot share an
+    import. Keep the two in sync.
+    """
     exp = getattr(r, "analysis_explanation", None)
     if not exp:
         return None

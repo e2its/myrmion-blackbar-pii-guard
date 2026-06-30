@@ -252,7 +252,12 @@ def _apply_operator(text: str, spans: Iterable[Span], operator: str) -> str:
 def _explain(result: Any) -> dict | None:
     """Extract the PII-safe part of a Presidio decision process: which
     recognizer fired and which named pattern. Never the matched value.
-    Returns None when no explanation is attached."""
+    Returns None when no explanation is attached.
+
+    Mirrored by ``analyzer_service._explain`` (the analyzer service is a
+    separately-deployable artifact with its own venv/Docker image, so the two
+    cannot share an import). Keep the two in sync.
+    """
     exp = getattr(result, "analysis_explanation", None)
     if not exp:
         return None

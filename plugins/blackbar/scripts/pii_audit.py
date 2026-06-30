@@ -49,15 +49,31 @@ import hashlib
 import json
 import os
 import re
+import sys
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
+try:
+    import fcntl  # POSIX file locking; absent on Windows
+except ImportError:  # pragma: no cover - platform dependent
+    fcntl = None
+
 _DAY_FILE_RE = re.compile(r"^pii-audit-(\d{4}-\d{2}-\d{2})\.jsonl$")
+_MARKER = ".last-prune"
 _TRUE = {"1", "true", "on", "yes"}
 
+# Serialises writes/prunes within a process (the proxy and MCP server are
+# multi-threaded); cross-process safety comes from flock on the day-file.
+_lock = threading.Lock()
+
 # Remembers the day we last pruned for, so we prune once per rollover rather
-# than on every single record write.
+# than on every single record write. Backed by a marker file so the guard also
+# holds across the short-lived hook processes, where this global is always cold.
 _pruned_for_day: str | None = None
+
+# One-time breadcrumb so an enabled-but-failing audit trail is not fully silent.
+_warned = False
 
 
 # --------------------------------------------------------------------------- #
@@ -123,7 +139,6 @@ def record(text: str, spans: Iterable[Any], source: str, cfg: Any, redacted: str
         os.makedirs(directory, exist_ok=True)
         now = datetime.now(timezone.utc)
         day = now.strftime("%Y-%m-%d")
-        _maybe_prune(directory, day)
 
         rec = {
             "ts": now.isoformat(),
@@ -137,11 +152,38 @@ def record(text: str, spans: Iterable[Any], source: str, cfg: Any, redacted: str
             "entities": [_entity_record(s) for s in spans],
             "redacted": redacted,  # safe to store: PII already removed
         }
+        line = json.dumps(rec, ensure_ascii=False) + "\n"
         path = os.path.join(directory, f"pii-audit-{day}.jsonl")
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        # In-process lock for proxy/MCP threads; flock for concurrent processes.
+        # Both keep one record's bytes from interleaving with another's.
+        with _lock:
+            _maybe_prune(directory, day)
+            with open(path, "a", encoding="utf-8") as f:
+                if fcntl is not None:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                try:
+                    f.write(line)
+                finally:
+                    if fcntl is not None:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    except Exception as exc:
+        # A failed audit must never propagate into the detection path -- but an
+        # enabled-but-broken trail (read-only dir, full disk) should not be
+        # fully silent. Warn once to stderr.
+        _warn_once(exc)
+
+
+def _warn_once(exc: Exception) -> None:
+    global _warned
+    if _warned:
+        return
+    _warned = True
+    try:
+        sys.stderr.write(
+            f"[blackbar] audit trail write failed ({type(exc).__name__}: {exc}); "
+            f"detection continues but records are NOT being written.\n"
+        )
     except Exception:
-        # A failed audit must never propagate into the detection path.
         pass
 
 
@@ -149,12 +191,26 @@ def record(text: str, spans: Iterable[Any], source: str, cfg: Any, redacted: str
 # Retention / lifecycle
 # --------------------------------------------------------------------------- #
 def _maybe_prune(directory: str, day: str) -> None:
+    """Prune at most once per UTC day. The in-process global is the fast path;
+    a marker file makes the guard hold across the short-lived hook processes
+    too, so prune() doesn't scan the directory on every hook invocation.
+    Callers hold ``_lock``."""
     global _pruned_for_day
     if _pruned_for_day == day:
         return
+    marker = os.path.join(directory, _MARKER)
+    try:
+        with open(marker, "r", encoding="utf-8") as f:
+            if f.read().strip() == day:
+                _pruned_for_day = day  # already pruned today by another process
+                return
+    except (FileNotFoundError, OSError):
+        pass
     _pruned_for_day = day
     try:
         prune(directory)
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(day)
     except Exception:
         pass
 
