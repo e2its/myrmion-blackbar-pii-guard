@@ -124,6 +124,16 @@ Set `BLACKBAR_AUDIT_ENABLED=1` and every PII detection — from hooks, the MCP
 server, the CLI and the proxy — is logged at the single chokepoint
 (`PresidioClient.analyze`), reusing the spans already computed (no re-detection).
 
+Records carry an `event` field:
+
+* `detect` — what the detector found (entities, scores, decision process).
+* `anonymize` — what the anonymization step actually **did**: the operator
+  applied (`replace`/`redact`/`mask`/`hash`/`encrypt`/`decrypt`), how many values
+  it transformed, and any `fallback` (e.g. `encrypt` → `redact` when no key was
+  available). This makes process problems visible in the trail, not just
+  detections. It records the operator name and counts only — never the values or
+  the `<ENC:…>` tokens.
+
 The log is designed so it can never be the leak: it stores a salted SHA-256
 **fingerprint** of the input (correlate identical inputs without keeping them),
 the redacted text, and each entity's type/score/span — **never the raw PII**.
@@ -150,6 +160,19 @@ record:
   "redacted": "El cliente <PERSON> (<EMAIL_ADDRESS>) llamo desde +34 600 123 456"
 }
 ```
+
+…and the matching `anonymize` record for the hook that encrypted that result:
+
+```json
+{
+  "ts": "2026-06-30T08:49:01Z", "event": "anonymize",
+  "source": "hook:PostToolUse", "operator": "encrypt",
+  "n_transformed": 2, "ok": true
+}
+```
+
+(An `encrypt` that fell back for lack of a key reads
+`"operator": "redact", "requested": "encrypt", "fallback": "no_key"`.)
 
 Records are appended as JSON lines, one file per UTC day
 (`pii-audit-YYYY-MM-DD.jsonl`) under `BLACKBAR_AUDIT_DIR`. Retention works by
