@@ -16,3 +16,7 @@ Thumbs.db
 
 # Local Presidio data / scratch
 *.log
+
+# Claude Code settings (local / not for the public repo)
+.claude/settings.json
+.claude/settings.local.json
