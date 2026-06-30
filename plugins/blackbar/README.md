@@ -90,6 +90,33 @@ environment variables above in the shell/profile that launches VS Code (or in
 your `.claude/settings.json` env block) so the extension's hook processes
 inherit them.
 
+### Updating to a new version
+
+The plugin runs from a cached copy under
+`~/.claude/plugins/cache/<marketplace>/blackbar/<version>/`, **not** from your
+working tree — so changes only go live after you refresh the cache and reload.
+Hooks reload on their next run; the long-lived MCP server does not until you
+reload it.
+
+```text
+# 1. refresh the marketplace (re-fetch its git source / main)
+/plugin marketplace update e2its
+
+# 2. reinstall so the cache rebuilds at the new version
+/plugin uninstall blackbar@e2its
+/plugin install blackbar@e2its
+
+# 3. reload hooks + MCP in-session (no restart needed)
+/reload-plugins
+```
+
+A reinstall at the *same* version may not recompile the cache, so bump
+`version` in `.claude-plugin/plugin.json` with each release. Verify with:
+
+```bash
+ls -d ~/.claude/plugins/cache/e2its/blackbar/*/   # the new version dir appears
+```
+
 ## Configuration
 
 All behavior is controlled by environment variables:

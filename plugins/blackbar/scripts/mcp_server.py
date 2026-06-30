@@ -36,7 +36,7 @@ from presidio_client import (  # noqa: E402
 )
 
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_INFO = {"name": "blackbar", "version": "0.3.0"}
+SERVER_INFO = {"name": "blackbar", "version": "0.4.0"}
 
 TOOLS = [
     {
