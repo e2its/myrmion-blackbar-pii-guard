@@ -294,7 +294,7 @@ def main() -> None:
         data = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
         sys.exit(0)  # malformed payload: never block on our own bug
-    client = PresidioClient()
+    client = PresidioClient(source=f"hook:{event}")
     try:
         handler(data, client)
     except PresidioUnavailable as exc:

@@ -114,17 +114,17 @@ TOOLS = [
 ]
 
 
-def _client(language: str | None, entities: list | None) -> PresidioClient:
+def _client(language: str | None, entities: list | None, source: str = "mcp") -> PresidioClient:
     cfg = Config.load()
     if language:
         cfg.language = language
     if entities:
         cfg.entities = tuple(entities)
-    return PresidioClient(cfg)
+    return PresidioClient(cfg, source=source)
 
 
 def tool_analyze(args: dict) -> str:
-    client = _client(args.get("language"), args.get("entities"))
+    client = _client(args.get("language"), args.get("entities"), "mcp:presidio_analyze")
     text = args.get("text", "")
     spans = client.analyze(text)
     findings = [
@@ -143,7 +143,7 @@ def tool_analyze(args: dict) -> str:
 def tool_anonymize(args: dict) -> str:
     operator = args.get("operator", "replace")
     text = args.get("text", "")
-    client = _client(args.get("language"), args.get("entities"))
+    client = _client(args.get("language"), args.get("entities"), "mcp:presidio_anonymize")
 
     if operator == "encrypt":
         return _anonymize_encrypt(client, text, args.get("key", ""))

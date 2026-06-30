@@ -51,6 +51,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bb_crypto  # noqa: E402
 import bb_key  # noqa: E402
+import pii_audit  # noqa: E402
 from presidio_client import (  # noqa: E402
     Config,
     PresidioClient,
@@ -73,7 +74,7 @@ def _client(args) -> PresidioClient:
     cfg = Config.load()
     if getattr(args, "language", None):
         cfg.language = args.language
-    return PresidioClient(cfg)
+    return PresidioClient(cfg, source=f"cli:{getattr(args, 'cmd', 'unknown')}")
 
 
 # --------------------------------------------------------------------------- #
@@ -148,6 +149,28 @@ def cmd_scan(args) -> int:
     return 0
 
 
+def cmd_audit(args) -> int:
+    import json
+
+    if args.action == "stats":
+        print(json.dumps(pii_audit.stats(), indent=2, ensure_ascii=False))
+        return 0
+    if args.action == "prune":
+        removed = pii_audit.prune()
+        _err(f"pruned {len(removed)} file(s) past {pii_audit.retention_days()}-day retention")
+        return 0
+    if args.action == "purge":
+        if not args.yes:
+            reply = input(f"Delete ALL audit files in {pii_audit.audit_dir()}? [y/N] ").strip().lower()
+            if reply not in {"y", "yes"}:
+                _err("aborted")
+                return 1
+        removed = pii_audit.purge()
+        _err(f"purged {len(removed)} file(s)")
+        return 0
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="blackbar", description="Local PII anonymize/de-anonymize")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -173,6 +196,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--out", help="key file path (default ~/.config/blackbar/key)")
     sp.add_argument("--force", action="store_true", help="overwrite an existing key file")
     sp.set_defaults(func=cmd_keygen)
+
+    sp = sub.add_parser("audit", help="manage the PII audit trail (stats/prune/purge)")
+    sp.add_argument("action", choices=["stats", "prune", "purge"], help="audit action")
+    sp.add_argument("--yes", action="store_true", help="skip confirmation for purge")
+    sp.set_defaults(func=cmd_audit)
 
     return p
 

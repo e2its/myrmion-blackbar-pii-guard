@@ -34,6 +34,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+import pii_audit
+
 
 # --------------------------------------------------------------------------- #
 # Configuration
@@ -73,20 +75,30 @@ class Span:
 # Detection backends
 # --------------------------------------------------------------------------- #
 class PresidioClient:
-    def __init__(self, config: Config | None = None) -> None:
+    def __init__(self, config: Config | None = None, source: str = "unknown") -> None:
         self.cfg = config or Config.load()
+        self.source = source  # caller label for the audit trail
         self._engine = None  # lazily built AnalyzerEngine for library mode
 
     # -- public API -------------------------------------------------------- #
     def analyze(self, text: str) -> list[Span]:
-        """Return PII spans found in `text`, filtered by score threshold."""
+        """Return PII spans found in `text`, filtered by score threshold.
+
+        Every call is the single detection chokepoint for hooks, the MCP
+        server, the CLI and the proxy, so it is also where the (opt-in) audit
+        trail is emitted -- reusing the spans just computed, never re-detecting.
+        """
         if not text or not text.strip():
             return []
         if self.cfg.mode == "library":
             raw = self._analyze_library(text)
         else:
             raw = self._analyze_service(text)
-        return [s for s in raw if s.score >= self.cfg.threshold]
+        spans = [s for s in raw if s.score >= self.cfg.threshold]
+        if pii_audit.enabled():
+            redacted = _apply_operator(text, spans, self.cfg.operator) if spans else text
+            pii_audit.record(text, spans, self.source, self.cfg, redacted)
+        return spans
 
     def redact(self, text: str) -> tuple[str, list[Span]]:
         """Return (redacted_text, spans). Applies the configured operator."""
