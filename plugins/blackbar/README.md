@@ -188,6 +188,46 @@ blackbar audit prune          # delete files past the retention window now
 blackbar audit purge --yes    # delete every audit file
 ```
 
+## Does PII reach the model? (guarantees & limits)
+
+**Short answer: no configuration *guarantees* that zero PII reaches the model.**
+blackbar is defense-in-depth that removes a large share of personal data —
+especially from tool results — but several paths remain by design. Know them so
+you can choose your posture deliberately.
+
+### What is covered vs what gets through
+
+| Path | Default | Detected PII reaches the model? |
+| --- | --- | --- |
+| **Your prompt** | `warn` | **Yes.** A hook cannot rewrite a prompt; `warn` only adds a note. Only `block` stops it — by rejecting the whole prompt. |
+| **Tool results from `Read`/`Bash`/`WebFetch`/`Grep`/`Glob`** | redacted/encrypted | **No** (while the analyzer is reachable). |
+| **Tool results from other tools** (`Edit`, `Write`, MCP tools, `Task`/subagents…) | not intercepted | **Yes.** `PostToolUse` only matches the five tools above. |
+| **Analyzer unreachable** | `fail=open` | **Yes.** Results pass unredacted (with a one-line notice) unless `fail=closed`. |
+| **Anything Presidio misses** | — | **Yes.** Only *detected* spans are removed; recall is high, not perfect. |
+
+So PII detected in a covered tool result, with `:5002` up, does **not** reach the
+model. Outside that — prompts, non-matched tools, outages, false negatives — it
+can.
+
+### What each setting actually does to a PII-bearing input
+
+| Setting | Effect | Cost |
+| --- | --- | --- |
+| `PRESIDIO_GUARD_PROMPT_POLICY=warn` | Prompt passes; Claude is told to treat it as sensitive. | PII still reaches the model. |
+| `PRESIDIO_GUARD_PROMPT_POLICY=block` | The **entire prompt** is rejected (`suppressOriginalPrompt`); you get the detected entity *types* and must rewrite and resubmit. Nothing is auto-redacted. | High friction: Presidio's false positives (names, URLs, locations in ordinary text) block normal prompts. |
+| `PRESIDIO_GUARD_FAIL=open` | On analyzer outage, work continues unredacted with a notice. | A detector outage = a redaction gap. |
+| `PRESIDIO_GUARD_FAIL=closed` | On analyzer outage, the action is blocked. | If `:5002` is down you cannot submit prompts or run matched tools. |
+| `PRESIDIO_GUARD_RESULT_MODE=encrypt` | Covered tool results reach the model as reversible `<ENC:…>` tokens instead of placeholders. | Needs a key; changes *how* PII is hidden, not *which paths* are covered. |
+
+### Tightening the net (opt-in, still not a certificate)
+
+To close the structural gaps — at the cost above — you would: set
+`PRESIDIO_GUARD_FAIL=closed`, set `PRESIDIO_GUARD_PROMPT_POLICY=block`, broaden
+the `PostToolUse` matcher in `hooks/hooks.json` to cover more tools (`Edit`,
+`Write`, MCP, `Task`…), and raise recall (`BLACKBAR_MODEL_SIZE=lg`, a lower
+`PRESIDIO_GUARD_THRESHOLD`, the right languages). Even then it covers the *known*
+paths, not "100%".
+
 ## Test it without Claude
 
 ```bash
@@ -202,7 +242,12 @@ python3 scripts/presidio_client.py "Ada Lovelace met Charles Babbage in London"
 
 - Presidio is high-recall, not infallible. For regulated data, keep a human in
   the loop.
-- Prompts cannot be silently redacted — only warned on or blocked.
+- Prompts cannot be silently redacted — only warned on or blocked (see
+  [Does PII reach the model?](#does-pii-reach-the-model-guarantees--limits)).
+- `PostToolUse` intercepts only `Read`/`Bash`/`WebFetch`/`Grep`/`Glob`; results
+  from other tools (including MCP and subagents) are not scrubbed.
 - `PreToolUse` only inspects `WebFetch`/`WebSearch` by default; it does not
   rewrite Bash commands (doing so would change what actually executes).
+- The audit trail records detections and operations for observability; it does
+  not itself prevent anything from reaching the model.
 - This is a starting point, not a certified DLP product.

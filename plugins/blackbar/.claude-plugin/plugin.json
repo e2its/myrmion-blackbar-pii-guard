@@ -1,7 +1,7 @@
 {
   "name": "blackbar",
   "description": "Myrmion blackbar — detect and redact PII/PHI/financial data with Microsoft Presidio across Claude Code and Claude for VS Code: scrubs tool results before the model sees them, gates outbound requests, and exposes analyze/anonymize tools.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "author": {
     "name": "e2its"
   },
