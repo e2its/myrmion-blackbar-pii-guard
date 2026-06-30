@@ -93,6 +93,22 @@ def fingerprint(text: str) -> str:
     return hashlib.sha256(_salt() + text.encode("utf-8")).hexdigest()[:16]
 
 
+def _entity_record(s: Any) -> dict:
+    """One PII-safe entity entry: type/score/span, plus the recognizer and
+    pattern name when the decision process is available (audit only)."""
+    rec = {
+        "type": s.entity_type,
+        "score": round(s.score, 3),
+        "start": s.start,
+        "end": s.end,
+    }
+    exp = getattr(s, "explanation", None)
+    if exp:
+        rec["recognizer"] = exp.get("recognizer")
+        rec["pattern"] = exp.get("pattern_name")
+    return rec
+
+
 # --------------------------------------------------------------------------- #
 # Writing
 # --------------------------------------------------------------------------- #
@@ -118,15 +134,7 @@ def record(text: str, spans: Iterable[Any], source: str, cfg: Any, redacted: str
             "operator": getattr(cfg, "operator", None),
             "threshold": getattr(cfg, "threshold", None),
             "n_entities": len(spans),
-            "entities": [
-                {
-                    "type": s.entity_type,
-                    "score": round(s.score, 3),
-                    "start": s.start,
-                    "end": s.end,
-                }
-                for s in spans
-            ],
+            "entities": [_entity_record(s) for s in spans],
             "redacted": redacted,  # safe to store: PII already removed
         }
         path = os.path.join(directory, f"pii-audit-{day}.jsonl")

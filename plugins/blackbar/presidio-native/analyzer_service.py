@@ -193,6 +193,19 @@ def health():
                     "recognizers": len(analyzer.registry.recognizers)})
 
 
+def _explain(r):
+    """PII-safe slice of Presidio's decision process: which recognizer fired
+    and which named pattern. Never the matched value. None if unavailable."""
+    exp = getattr(r, "analysis_explanation", None)
+    if not exp:
+        return None
+    recognizer = getattr(exp, "recognizer", None)
+    pattern_name = getattr(exp, "pattern_name", None)
+    if recognizer is None and pattern_name is None:
+        return None
+    return {"recognizer": recognizer, "pattern_name": pattern_name}
+
+
 @app.route("/analyze", methods=["POST"])
 def analyze():
     data = request.get_json(force=True) or {}
@@ -200,10 +213,20 @@ def analyze():
     language = data.get("language", "en")
     if language not in LANGUAGES:
         language = "en"
+    decision = bool(data.get("return_decision_process"))
     results = analyzer.analyze(text=text, language=language,
-                               entities=data.get("entities") or None)
-    return jsonify([{"entity_type": r.entity_type, "start": r.start,
-                     "end": r.end, "score": round(r.score, 3)} for r in results])
+                               entities=data.get("entities") or None,
+                               return_decision_process=decision)
+    out = []
+    for r in results:
+        item = {"entity_type": r.entity_type, "start": r.start,
+                "end": r.end, "score": round(r.score, 3)}
+        if decision:
+            explanation = _explain(r)
+            if explanation:
+                item["analysis_explanation"] = explanation
+        out.append(item)
+    return jsonify(out)
 
 
 if __name__ == "__main__":
