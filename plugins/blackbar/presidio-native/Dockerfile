@@ -30,8 +30,12 @@ RUN pip install --no-cache-dir "flask>=3.0"
 
 COPY analyzer_service.py /app/analyzer_service.py
 
+# In a container the app must bind all interfaces, otherwise the host can't
+# reach it through the compose port map (5002:3000). The native path keeps the
+# safe 127.0.0.1 default from analyzer_service.py.
 ENV BLACKBAR_LANGUAGES=$LANGS \
     BLACKBAR_MODEL_SIZE=$MODEL_SIZE \
+    BLACKBAR_BIND_HOST=0.0.0.0 \
     PORT=3000
 
 USER 1001

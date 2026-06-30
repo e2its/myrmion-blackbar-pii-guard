@@ -22,8 +22,13 @@ services:
     # For English only, swap the image line for:
     #   mcr.microsoft.com/presidio-analyzer:latest
     image: e2its/presidio-analyzer-multilang:latest
+    # Bind all interfaces INSIDE the container so the host reaches it through the
+    # port map; the host only publishes it on 127.0.0.1 (not the LAN), since this
+    # processes PII.
+    environment:
+      BLACKBAR_BIND_HOST: "0.0.0.0"
     ports:
-      - "5002:3000"
+      - "127.0.0.1:5002:3000"
     restart: unless-stopped
 
   # Optional — uncomment to also run the anonymizer service.

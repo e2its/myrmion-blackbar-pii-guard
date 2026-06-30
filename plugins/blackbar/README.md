@@ -90,6 +90,33 @@ environment variables above in the shell/profile that launches VS Code (or in
 your `.claude/settings.json` env block) so the extension's hook processes
 inherit them.
 
+### Updating to a new version
+
+The plugin runs from a cached copy under
+`~/.claude/plugins/cache/<marketplace>/blackbar/<version>/`, **not** from your
+working tree — so changes only go live after you refresh the cache and reload.
+Hooks reload on their next run; the long-lived MCP server does not until you
+reload it.
+
+```text
+# 1. refresh the marketplace (re-fetch its git source / main)
+/plugin marketplace update e2its
+
+# 2. reinstall so the cache rebuilds at the new version
+/plugin uninstall blackbar@e2its
+/plugin install blackbar@e2its
+
+# 3. reload hooks + MCP in-session (no restart needed)
+/reload-plugins
+```
+
+A reinstall at the *same* version may not recompile the cache, so bump
+`version` in `.claude-plugin/plugin.json` with each release. Verify with:
+
+```bash
+ls -d ~/.claude/plugins/cache/e2its/blackbar/*/   # the new version dir appears
+```
+
 ## Configuration
 
 All behavior is controlled by environment variables:
@@ -124,6 +151,16 @@ Set `BLACKBAR_AUDIT_ENABLED=1` and every PII detection — from hooks, the MCP
 server, the CLI and the proxy — is logged at the single chokepoint
 (`PresidioClient.analyze`), reusing the spans already computed (no re-detection).
 
+Records carry an `event` field:
+
+* `detect` — what the detector found (entities, scores, decision process).
+* `anonymize` — what the anonymization step actually **did**: the operator
+  applied (`replace`/`redact`/`mask`/`hash`/`encrypt`/`decrypt`), how many values
+  it transformed, and any `fallback` (e.g. `encrypt` → `redact` when no key was
+  available). This makes process problems visible in the trail, not just
+  detections. It records the operator name and counts only — never the values or
+  the `<ENC:…>` tokens.
+
 The log is designed so it can never be the leak: it stores a salted SHA-256
 **fingerprint** of the input (correlate identical inputs without keeping them),
 the redacted text, and each entity's type/score/span — **never the raw PII**.
@@ -151,6 +188,19 @@ record:
 }
 ```
 
+…and the matching `anonymize` record for the hook that encrypted that result:
+
+```json
+{
+  "ts": "2026-06-30T08:49:01Z", "event": "anonymize",
+  "source": "hook:PostToolUse", "operator": "encrypt",
+  "n_transformed": 2, "ok": true
+}
+```
+
+(An `encrypt` that fell back for lack of a key reads
+`"operator": "redact", "requested": "encrypt", "fallback": "no_key"`.)
+
 Records are appended as JSON lines, one file per UTC day
 (`pii-audit-YYYY-MM-DD.jsonl`) under `BLACKBAR_AUDIT_DIR`. Retention works by
 deleting whole day-files: when the day rolls over, files older than
@@ -164,6 +214,46 @@ blackbar audit stats          # files, record count, days, size
 blackbar audit prune          # delete files past the retention window now
 blackbar audit purge --yes    # delete every audit file
 ```
+
+## Does PII reach the model? (guarantees & limits)
+
+**Short answer: no configuration *guarantees* that zero PII reaches the model.**
+blackbar is defense-in-depth that removes a large share of personal data —
+especially from tool results — but several paths remain by design. Know them so
+you can choose your posture deliberately.
+
+### What is covered vs what gets through
+
+| Path | Default | Detected PII reaches the model? |
+| --- | --- | --- |
+| **Your prompt** | `warn` | **Yes.** A hook cannot rewrite a prompt; `warn` only adds a note. Only `block` stops it — by rejecting the whole prompt. |
+| **Tool results from `Read`/`Bash`/`WebFetch`/`Grep`/`Glob`** | redacted/encrypted | **No** (while the analyzer is reachable). |
+| **Tool results from other tools** (`Edit`, `Write`, MCP tools, `Task`/subagents…) | not intercepted | **Yes.** `PostToolUse` only matches the five tools above. |
+| **Analyzer unreachable** | `fail=open` | **Yes.** Results pass unredacted (with a one-line notice) unless `fail=closed`. |
+| **Anything Presidio misses** | — | **Yes.** Only *detected* spans are removed; recall is high, not perfect. |
+
+So PII detected in a covered tool result, with `:5002` up, does **not** reach the
+model. Outside that — prompts, non-matched tools, outages, false negatives — it
+can.
+
+### What each setting actually does to a PII-bearing input
+
+| Setting | Effect | Cost |
+| --- | --- | --- |
+| `PRESIDIO_GUARD_PROMPT_POLICY=warn` | Prompt passes; Claude is told to treat it as sensitive. | PII still reaches the model. |
+| `PRESIDIO_GUARD_PROMPT_POLICY=block` | The **entire prompt** is rejected (`suppressOriginalPrompt`); you get the detected entity *types* and must rewrite and resubmit. Nothing is auto-redacted. | High friction: Presidio's false positives (names, URLs, locations in ordinary text) block normal prompts. |
+| `PRESIDIO_GUARD_FAIL=open` | On analyzer outage, work continues unredacted with a notice. | A detector outage = a redaction gap. |
+| `PRESIDIO_GUARD_FAIL=closed` | On analyzer outage, the action is blocked. | If `:5002` is down you cannot submit prompts or run matched tools. |
+| `PRESIDIO_GUARD_RESULT_MODE=encrypt` | Covered tool results reach the model as reversible `<ENC:…>` tokens instead of placeholders. | Needs a key; changes *how* PII is hidden, not *which paths* are covered. |
+
+### Tightening the net (opt-in, still not a certificate)
+
+To close the structural gaps — at the cost above — you would: set
+`PRESIDIO_GUARD_FAIL=closed`, set `PRESIDIO_GUARD_PROMPT_POLICY=block`, broaden
+the `PostToolUse` matcher in `hooks/hooks.json` to cover more tools (`Edit`,
+`Write`, MCP, `Task`…), and raise recall (`BLACKBAR_MODEL_SIZE=lg`, a lower
+`PRESIDIO_GUARD_THRESHOLD`, the right languages). Even then it covers the *known*
+paths, not "100%".
 
 ## Test it without Claude
 
@@ -179,7 +269,12 @@ python3 scripts/presidio_client.py "Ada Lovelace met Charles Babbage in London"
 
 - Presidio is high-recall, not infallible. For regulated data, keep a human in
   the loop.
-- Prompts cannot be silently redacted — only warned on or blocked.
+- Prompts cannot be silently redacted — only warned on or blocked (see
+  [Does PII reach the model?](#does-pii-reach-the-model-guarantees--limits)).
+- `PostToolUse` intercepts only `Read`/`Bash`/`WebFetch`/`Grep`/`Glob`; results
+  from other tools (including MCP and subagents) are not scrubbed.
 - `PreToolUse` only inspects `WebFetch`/`WebSearch` by default; it does not
   rewrite Bash commands (doing so would change what actually executes).
+- The audit trail records detections and operations for observability; it does
+  not itself prevent anything from reaching the model.
 - This is a starting point, not a certified DLP product.

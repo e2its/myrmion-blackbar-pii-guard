@@ -50,6 +50,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bb_crypto  # noqa: E402
 import bb_key  # noqa: E402
+import pii_audit  # noqa: E402
 from presidio_client import (  # noqa: E402
     PresidioClient,
     PresidioUnavailable,
@@ -187,6 +188,7 @@ def _decrypt_tool_input(data: dict, client: PresidioClient, tool: str) -> None:
     )
     if count == 0:
         return
+    pii_audit.record_op(client.source, "decrypt", count)
     _emit(
         {
             "hookSpecificOutput": {
@@ -242,6 +244,19 @@ def handle_post_tool_use(data: dict, client: PresidioClient) -> None:
             "before you received it. Placeholders like <EMAIL_ADDRESS> stand "
             "in for the originals."
         )
+
+    if count:
+        # Record what the anonymization actually did, so the trail shows the
+        # operation (and any encrypt->redact fallback), not just the detection.
+        if mode == "encrypt" and key:
+            pii_audit.record_op(client.source, "encrypt", count)
+        elif mode == "encrypt" and not key:
+            pii_audit.record_op(
+                client.source, client.cfg.operator, count,
+                requested="encrypt", fallback="no_key",
+            )
+        else:
+            pii_audit.record_op(client.source, client.cfg.operator, count)
 
     if count == 0:
         sys.exit(0)

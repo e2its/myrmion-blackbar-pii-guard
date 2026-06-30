@@ -128,31 +128,21 @@ def _entity_record(s: Any) -> dict:
 # --------------------------------------------------------------------------- #
 # Writing
 # --------------------------------------------------------------------------- #
-def record(text: str, spans: Iterable[Any], source: str, cfg: Any, redacted: str) -> None:
-    """Append one PII-safe audit record for a detector call. No-op when
-    auditing is disabled. Never raises -- auditing must not break detection."""
+def _emit(rec: dict) -> None:
+    """Append one record (any event) to today's day-file, stamping ``ts``.
+    No-op when disabled. Never raises -- auditing must not break the caller;
+    an enabled-but-broken trail (read-only dir, full disk) warns once instead
+    of staying fully silent."""
     if not enabled():
         return
     try:
-        spans = list(spans)
         directory = audit_dir()
         os.makedirs(directory, exist_ok=True)
         now = datetime.now(timezone.utc)
         day = now.strftime("%Y-%m-%d")
-
-        rec = {
-            "ts": now.isoformat(),
-            "source": source,
-            "fingerprint": fingerprint(text),
-            "lang": getattr(cfg, "language", None),
-            "mode": getattr(cfg, "mode", None),
-            "operator": getattr(cfg, "operator", None),
-            "threshold": getattr(cfg, "threshold", None),
-            "n_entities": len(spans),
-            "entities": [_entity_record(s) for s in spans],
-            "redacted": redacted,  # safe to store: PII already removed
-        }
-        line = json.dumps(rec, ensure_ascii=False) + "\n"
+        # The audit owns "ts": strip any caller-supplied one so it can't be forged.
+        body = {k: v for k, v in rec.items() if k != "ts"}
+        line = json.dumps({"ts": now.isoformat(), **body}, ensure_ascii=False) + "\n"
         path = os.path.join(directory, f"pii-audit-{day}.jsonl")
         # In-process lock for proxy/MCP threads; flock for concurrent processes.
         # Both keep one record's bytes from interleaving with another's.
@@ -167,10 +157,63 @@ def record(text: str, spans: Iterable[Any], source: str, cfg: Any, redacted: str
                     if fcntl is not None:
                         fcntl.flock(f.fileno(), fcntl.LOCK_UN)
     except Exception as exc:
-        # A failed audit must never propagate into the detection path -- but an
-        # enabled-but-broken trail (read-only dir, full disk) should not be
-        # fully silent. Warn once to stderr.
         _warn_once(exc)
+
+
+def record(text: str, spans: Iterable[Any], source: str, cfg: Any, redacted: str) -> None:
+    """Append a ``detect`` record: what the detector found on one call."""
+    if not enabled():
+        return
+    spans = list(spans)
+    _emit({
+        "event": "detect",
+        "source": source,
+        "fingerprint": fingerprint(text),
+        "lang": getattr(cfg, "language", None),
+        "mode": getattr(cfg, "mode", None),
+        "operator": getattr(cfg, "operator", None),
+        "threshold": getattr(cfg, "threshold", None),
+        "n_entities": len(spans),
+        "entities": [_entity_record(s) for s in spans],
+        "redacted": redacted,  # safe to store: PII already removed
+    })
+
+
+def record_op(
+    source: str,
+    operator: str,
+    n_transformed: int,
+    *,
+    requested: str | None = None,
+    fallback: str | None = None,
+    ok: bool = True,
+    error: str | None = None,
+) -> None:
+    """Append an ``anonymize`` record: what the anonymization step actually did,
+    so process problems are visible in the trail (e.g. an encrypt that fell back
+    to redact for lack of a key, or a detector outage). PII-safe: operator name
+    and counts only, never the values or the tokens.
+
+    ``operator``  is the operation applied (replace|redact|mask|hash|encrypt|decrypt).
+    ``requested`` is what was asked for, when it differs (e.g. "encrypt" while the
+    applied operator is "redact" because no key was available).
+    """
+    if not enabled():
+        return
+    rec: dict = {
+        "event": "anonymize",
+        "source": source,
+        "operator": operator,
+        "n_transformed": n_transformed,
+        "ok": ok,
+    }
+    if requested is not None and requested != operator:
+        rec["requested"] = requested
+    if fallback is not None:
+        rec["fallback"] = fallback
+    if error is not None:
+        rec["error"] = error
+    _emit(rec)
 
 
 def _warn_once(exc: Exception) -> None:

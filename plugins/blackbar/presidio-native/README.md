@@ -22,9 +22,19 @@ file, so Docker and native detect identically.
 ```bash
 cd plugins/blackbar/presidio-native
 ./setup.sh                 # venv + presidio + flask + spaCy models (md, 6 langs)
-./run.sh                   # serves :5002
+./run.sh                   # serves 127.0.0.1:5002
 curl -s localhost:5002/health
 ```
+
+The service binds **`127.0.0.1` by default** — it processes PII, so it stays off
+the LAN. Override only if you truly need remote access:
+
+```bash
+BLACKBAR_BIND_HOST=0.0.0.0 ./run.sh      # exposes :5002 on all interfaces
+```
+
+(The Docker image sets `BLACKBAR_BIND_HOST=0.0.0.0` internally so the container is
+reachable through the port map, while compose still publishes it on `127.0.0.1`.)
 
 Smaller / larger footprint:
 
@@ -59,13 +69,23 @@ BLACKBAR_ENABLE_ZEROSHOT=1 ./run.sh
 
 ## Run as a service (optional, systemd --user)
 
+One shared instance for every Claude Code session, every parallel VS Code window,
+and every repo — started once at login, not per project:
+
 ```ini
 # ~/.config/systemd/user/blackbar-analyzer.service
 [Unit]
-Description=blackbar native Presidio analyzer
+Description=blackbar native Presidio analyzer (localhost:5002)
+After=network-online.target
+Wants=network-online.target
 [Service]
-ExecStart=%h/dev/e2its/myrmion-blackbar-pii-guard/plugins/blackbar/presidio-native/run.sh
+Environment=PORT=5002
+Environment=BLACKBAR_LANGUAGES=en,es,fr,de,it,pt
+Environment=BLACKBAR_MODEL_SIZE=md
+ExecStart=%h/.local/share/blackbar/presidio-venv/bin/python %h/dev/e2its/myrmion-blackbar-pii-guard/plugins/blackbar/presidio-native/analyzer_service.py
 Restart=on-failure
+RestartSec=3
+TimeoutStartSec=120
 [Install]
 WantedBy=default.target
 ```
@@ -73,4 +93,9 @@ WantedBy=default.target
 ```bash
 systemctl --user daemon-reload
 systemctl --user enable --now blackbar-analyzer
+loginctl enable-linger "$USER"     # keep it up at boot, without a graphical login
 ```
+
+Binds `127.0.0.1` (the `analyzer_service.py` default). Manage with
+`systemctl --user {status,restart,stop} blackbar-analyzer` and
+`journalctl --user -u blackbar-analyzer -f`.

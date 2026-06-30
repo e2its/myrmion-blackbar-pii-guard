@@ -26,6 +26,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bb_crypto  # noqa: E402
+import pii_audit  # noqa: E402
 from presidio_client import (  # noqa: E402
     Config,
     PresidioClient,
@@ -35,7 +36,7 @@ from presidio_client import (  # noqa: E402
 )
 
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_INFO = {"name": "blackbar", "version": "0.3.0"}
+SERVER_INFO = {"name": "blackbar", "version": "0.4.0"}
 
 TOOLS = [
     {
@@ -153,6 +154,10 @@ def tool_anonymize(args: dict) -> str:
     # duplicate audit record for the same input).
     spans = client.analyze(text)
     redacted = _apply_operator(text, spans, operator)
+    # Count what is actually rewritten (overlaps are dropped), not raw detections.
+    resolved = _resolve_overlaps(spans)
+    if resolved:
+        pii_audit.record_op("mcp:presidio_anonymize", operator, len(resolved))
     return json.dumps(
         {"text": redacted, "entities_found": sorted({s.entity_type for s in spans})},
         indent=2,
@@ -164,7 +169,10 @@ def _anonymize_encrypt(client: PresidioClient, text: str, key: str) -> str:
         return json.dumps({"error": "operator=encrypt requires a 'key'."})
     spans = client.analyze(text)
     # Apply right-to-left so earlier offsets stay valid as tokens change length.
-    encrypted = bb_crypto.encrypt_spans(text, _resolve_overlaps(spans), key)
+    resolved = _resolve_overlaps(spans)
+    encrypted = bb_crypto.encrypt_spans(text, resolved, key)
+    if resolved:
+        pii_audit.record_op("mcp:presidio_anonymize", "encrypt", len(resolved))
     return json.dumps(
         {
             "text": encrypted,
@@ -181,6 +189,8 @@ def tool_decrypt(args: dict) -> str:
     if not key:
         return json.dumps({"error": "presidio_decrypt requires a 'key'."})
     restored, count = bb_crypto.decrypt_text(text, key)
+    if count:
+        pii_audit.record_op("mcp:presidio_decrypt", "decrypt", count)
     return json.dumps({"text": restored, "restored": count}, indent=2)
 
 
