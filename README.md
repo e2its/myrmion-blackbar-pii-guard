@@ -340,30 +340,62 @@ it's reused automatically; Desktop has no such file, by design.)
 simple, friendly way to censor personal data by copy-and-paste — on a subscription, with no
 API key, and no change to how you use Claude.
 
-It's a small page that runs **only on your computer**. The loop is four steps:
+It's a small page that runs **only on your computer** (nothing is uploaded). Once it's set
+up, day-to-day use is four steps:
 
-1. **Paste** your prompt (or drop a `.docx / .xlsx / .pdf / …` and it extracts the text).
-2. Click **Anonymize** — the personal data becomes reversible `<ENC:…>` tokens.
-3. **Copy** that into Claude Desktop and chat as normal.
-4. **Paste** Claude's reply back and click **Restore** — your real values come back.
+1. **Paste** your prompt (or drag in a `.docx / .xlsx / .pdf / …` and it pulls out the text).
+2. Click **Anonymize** — the personal data turns into reversible `<ENC:…>` tokens, and the
+   safe version is copied to your clipboard for you.
+3. **Paste** it into Claude Desktop and chat as normal.
+4. **Paste** Claude's reply back into the app and click **Restore** — your real values return.
 
-It keeps the whole multi-turn conversation in a sidebar, highlights what it detected before
-you send, and — because it remembers the exact tokens it handed out — tells you precisely
-which token Claude altered if a value doesn't come back, and hands you the correct one to
-re-paste.
+### Set it up (once — about 10 minutes)
 
-### Start it
+The first time, you get three things going; after that it's just "open two windows".
 
-```sh
-# 1. analyzer running (see §6) — needed to detect PII; restoring needs no analyzer
-# 2. a key (see §10): bin/blackbar keygen   — or generate one from the app
-python3 web/blackbar_web.py        # opens http://127.0.0.1:8765
-# or:  bin/blackbar-web            # or:  bin/blackbar web
-```
+1. **The detector.** Do [§6](#6-get-started-in-3-steps) above once. It starts the local
+   "analyzer" that finds the personal data. **Leave that window open.** (Restoring text later
+   doesn't need it, but anonymizing does.)
+2. **The app.** Open a **new** terminal window, go into the blackbar folder, and run:
+   ```bash
+   python3 web/blackbar_web.py
+   ```
+   Your web browser opens by itself at **http://127.0.0.1:8765**. Leave this window open too.
+   *(On Windows, type `python` instead of `python3`.)*
+3. **A key.** The first time only, click the **key button** at the top of the page and choose
+   **Generate**. Done. (This secret is what lets *your* computer turn the tokens back into the
+   real values. Keep it — without it, encrypted values can't be recovered.)
 
-Localhost only; your text and the key never leave your machine (the browser never even sees
-the key — only a short fingerprint). It uses the **same key** as the CLI/plugin/Desktop, so
-tokens are interchangeable. Full details: [web/README.md](web/README.md).
+Next time there's no setup: just start the detector again (§6, `./run.sh`) and the app
+(`python3 web/blackbar_web.py`).
+
+> One-command shortcuts (same thing): `bin/blackbar-web`, or `bin/blackbar web`.
+
+### What the screen shows
+
+- **Session list (left).** Every exchange is a **turn**, newest at the top, each stamped with
+  its `date · time · timezone`. You can **archive** (↓) or **delete** (✕) turns.
+- **Detect ▾.** Pick which kinds of data to look for in this turn (names, emails, IDs, health,
+  and so on). Leave it on **all** unless you want to narrow it down.
+- **Highlights & sensitivity.** Before you send, it shows exactly what it found so you can add
+  or remove items, and a slider lets you make detection stricter or looser.
+- **Restore diagnostics.** Because the app remembers the exact tokens it created, if Claude
+  changes one and a value doesn't come back, it tells you *which* one — and gives you the
+  correct token to paste again.
+- **Panic** wipes everything from memory instantly.
+
+### If something looks off
+
+- **"detector offline" (red dot).** The analyzer window isn't running — start it again
+  ([§6](#6-get-started-in-3-steps), Step 2). You can still **Restore**, just not **Anonymize**.
+- **"no key".** Click the key button at the top → **Generate**.
+- **A name isn't detected.** Open **Detect ▾** and make sure that type is ticked, nudge the
+  **sensitivity** slider down a little, or select the text and mark it by hand.
+
+Everything stays on your computer: your text and the key never leave your machine (the browser
+only ever sees a short *fingerprint* of the key, never the key itself). It uses the **same
+key** as the CLI/plugin/Desktop, so tokens are interchangeable. Technical details:
+[web/README.md](web/README.md).
 
 ---
 
@@ -519,6 +551,8 @@ go to stderr, so pipes/clipboards stay clean. Key resolution order: `--key` →
 | `blackbar enc [text]` | `--key`, `--language` | text with `<ENC:…>` tokens | `encrypted N value(s): TYPES` |
 | `blackbar dec [text]` | `--key` | text with originals restored | `restored N token(s)` |
 | `blackbar keygen` | `--out`, `--force` | — | path of the new `0600` key file |
+| `blackbar audit` | `stats\|prune\|purge`, `--yes` | audit summary (JSON) | files affected |
+| `blackbar web` | `--port`, `--no-open` | — | launches the web app on `127.0.0.1:8765` |
 
 ```console
 $ blackbar scan --language es "me llamo Ada Lovelace y mi DNI es 12345678Z"
