@@ -11,6 +11,8 @@ when you paste Claude's reply back it restores the original values.
  ④  restored text  ◀──Restore──  ③  paste Claude's reply  ◀──copy──┘
 ```
 
+![The Myrmion blackbar web app](../assets/web-app.png)
+
 It reuses the exact same engine as the rest of blackbar (`bb_crypto`,
 `presidio_client`, `bb_key`), so tokens are **interchangeable** with the CLI,
 the Claude Code hooks/MCP, the proxy, and the Claude Desktop extension.
@@ -42,6 +44,7 @@ the Claude Code hooks/MCP, the proxy, and the Claude Desktop extension.
 
 3. **Launch the app** — any of:
    ```sh
+   bin/blackbar-start                     # easiest: also starts the detector if needed
    python3 web/blackbar_web.py            # opens http://127.0.0.1:8765
    bin/blackbar-web --port 9000 --no-open
    bin/blackbar web                       # via the CLI subcommand

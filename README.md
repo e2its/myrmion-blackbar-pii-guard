@@ -349,27 +349,43 @@ up, day-to-day use is four steps:
 3. **Paste** it into Claude Desktop and chat as normal.
 4. **Paste** Claude's reply back into the app and click **Restore** — your real values return.
 
-### Set it up (once — about 10 minutes)
+![The Myrmion blackbar web app](assets/web-app.png)
 
-The first time, you get three things going; after that it's just "open two windows".
+*The numbered cards match the four steps: ① your text → ② the safe, tokenized version (copied
+for you) → ③ paste Claude's reply → ④ the restored text. On the **left**, the session list —
+newest turn first, each stamped with its `date · time · timezone`; hover a turn to **archive**
+or **delete** it. Along the **top**: the detector and key status, the language, and the
+**Detect ▾** picker to choose which kinds of data to look for.*
 
-1. **The detector.** Do [§6](#6-get-started-in-3-steps) above once. It starts the local
-   "analyzer" that finds the personal data. **Leave that window open.** (Restoring text later
-   doesn't need it, but anonymizing does.)
-2. **The app.** Open a **new** terminal window, go into the blackbar folder, and run:
+### Easiest: one command
+
+From the blackbar folder, run:
+
+```bash
+bin/blackbar-start
+```
+
+This starts the detector for you if it isn't already running — **the very first time it
+prepares one automatically** (a few minutes, once) — waits until it's ready, and opens the app
+in your browser at **http://127.0.0.1:8765**. Press **Ctrl-C** once to stop everything.
+
+The only setup left: the first time, click the **key** button at the top of the page and
+choose **Generate**. That's it.
+
+### Manual start (two windows)
+
+Prefer to run the pieces yourself (or you're on Windows without Git Bash)?
+
+1. **The detector.** Do [§6](#6-get-started-in-3-steps) above once, and **leave that window
+   open**. (Restoring text later doesn't need it, but anonymizing does.)
+2. **The app.** In a **new** terminal, from the blackbar folder:
    ```bash
    python3 web/blackbar_web.py
    ```
-   Your web browser opens by itself at **http://127.0.0.1:8765**. Leave this window open too.
-   *(On Windows, type `python` instead of `python3`.)*
-3. **A key.** The first time only, click the **key button** at the top of the page and choose
-   **Generate**. Done. (This secret is what lets *your* computer turn the tokens back into the
-   real values. Keep it — without it, encrypted values can't be recovered.)
-
-Next time there's no setup: just start the detector again (§6, `./run.sh`) and the app
-(`python3 web/blackbar_web.py`).
-
-> One-command shortcuts (same thing): `bin/blackbar-web`, or `bin/blackbar web`.
+   Your browser opens by itself at **http://127.0.0.1:8765**. *(On Windows, type `python`.)*
+   Shortcuts that do the same: `bin/blackbar-web` or `bin/blackbar web`.
+3. **A key.** The first time only, click the **key** button at the top → **Generate**. Keep it
+   — without it, encrypted values can't be recovered.
 
 ### What the screen shows
 
