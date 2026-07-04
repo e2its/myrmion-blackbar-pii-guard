@@ -1,0 +1,15 @@
+#!/usr/bin/env sh
+# blackbar-web — launcher for the local PII "firewall" web app.
+#
+# Starts a localhost-only web UI for the manual copy/paste workflow with Claude
+# Desktop: paste a prompt, anonymize the PII into reversible <ENC:...> tokens,
+# copy that into Claude, then paste Claude's reply back and restore the values.
+#
+# Put this directory on your PATH (or symlink this file into ~/.local/bin), then:
+#   blackbar-web              # opens http://127.0.0.1:8765
+#   blackbar-web --port 9000 --no-open
+#
+# Requires the Presidio analyzer running for anonymize/scan (decrypt needs no
+# analyzer). See web/README.md.
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec python3 "$here/../web/blackbar_web.py" "$@"

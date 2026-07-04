@@ -33,6 +33,7 @@
 **Set up your version**
 7. [Claude Code](#7-claude-code-automatic-protection)
 8. [Claude Desktop](#8-claude-desktop-on-demand-protection)
+   - [The web app (copy/paste firewall)](#the-web-app-local-copypaste-firewall)
 9. [Transparent proxy](#9-transparent-proxy-advanced-api-key)
 
 **Understand & troubleshoot**
@@ -160,6 +161,7 @@ There are two small pieces:
 | --- | --- | --- |
 | **Claude Code** (terminal or VS Code) | [Claude Code plugin](#7-claude-code-automatic-protection) | **Automatic** — censors what the AI reads, plus on-demand commands |
 | **Claude Desktop** (the app) | [Desktop extension](#8-claude-desktop-on-demand-protection) | **On-demand** — you ask "scan/anonymize this" |
+| **Claude Desktop / claude.ai, by copy-paste** | [The web app](#the-web-app-local-copypaste-firewall) | A localhost page: paste → anonymize → copy into Claude → paste the reply → restore |
 | **Claude Code with a developer API key** and you want it fully invisible | [Transparent proxy](#9-transparent-proxy-advanced-api-key) | You type/read normal text; the AI only sees censored text |
 | **Any website/app** (claude.ai, browser extension, Office) | the copy-paste helper (works on subscriptions) | Censor on copy, restore on paste — see [§10](#10-reversible-anonymization-explained-simply) |
 
@@ -329,6 +331,39 @@ You (later, even in a new chat): "Decrypt this with key swordfish-42:
 If you lose the key, the values **cannot** be recovered — there is no stored copy anywhere.
 (In Claude Code and the CLI you can instead save the key once with `bin/blackbar keygen` and
 it's reused automatically; Desktop has no such file, by design.)
+
+---
+
+## The web app (local copy/paste firewall)
+
+**Best for:** anyone using **Claude Desktop**, **claude.ai**, or any chat box who wants a
+simple, friendly way to censor personal data by copy-and-paste — on a subscription, with no
+API key, and no change to how you use Claude.
+
+It's a small page that runs **only on your computer**. The loop is four steps:
+
+1. **Paste** your prompt (or drop a `.docx / .xlsx / .pdf / …` and it extracts the text).
+2. Click **Anonymize** — the personal data becomes reversible `<ENC:…>` tokens.
+3. **Copy** that into Claude Desktop and chat as normal.
+4. **Paste** Claude's reply back and click **Restore** — your real values come back.
+
+It keeps the whole multi-turn conversation in a sidebar, highlights what it detected before
+you send, and — because it remembers the exact tokens it handed out — tells you precisely
+which token Claude altered if a value doesn't come back, and hands you the correct one to
+re-paste.
+
+### Start it
+
+```sh
+# 1. analyzer running (see §6) — needed to detect PII; restoring needs no analyzer
+# 2. a key (see §10): bin/blackbar keygen   — or generate one from the app
+python3 web/blackbar_web.py        # opens http://127.0.0.1:8765
+# or:  bin/blackbar-web            # or:  bin/blackbar web
+```
+
+Localhost only; your text and the key never leave your machine (the browser never even sees
+the key — only a short fingerprint). It uses the **same key** as the CLI/plugin/Desktop, so
+tokens are interchangeable. Full details: [web/README.md](web/README.md).
 
 ---
 
@@ -552,6 +587,10 @@ myrmion-blackbar-pii-guard/
 ├── bin/blackbar                      # universal enc/dec/scan/keygen CLI
 ├── desktop/                          # Claude Desktop extension (.mcpb) — Node MCP server
 ├── proxy/blackbar_proxy.py           # transparent streaming proxy (API key)
+├── web/                              # local PII "firewall" web app (copy/paste UI)
+│   ├── blackbar_web.py               # zero-dep http.server backend (bind 127.0.0.1)
+│   ├── extract.py · langdetect.py    # document text extraction · language autodetect
+│   └── static/                       # self-contained SPA (index.html, app.js, styles.css)
 └── docs/                             # architecture & clipboard recipes
 ```
 
