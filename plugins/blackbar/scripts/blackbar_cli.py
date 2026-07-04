@@ -171,6 +171,24 @@ def cmd_audit(args) -> int:
     return 0
 
 
+def cmd_web(args) -> int:
+    """Launch the local PII "firewall" web app (web/blackbar_web.py)."""
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    web_dir = os.path.join(root, "web")
+    if not os.path.isfile(os.path.join(web_dir, "blackbar_web.py")):
+        _err(f"web app not found at {web_dir}/blackbar_web.py")
+        return 1
+    sys.path.insert(0, web_dir)
+    import blackbar_web  # noqa: E402
+
+    argv: list[str] = []
+    if args.port is not None:
+        argv += ["--port", str(args.port)]
+    if args.no_open:
+        argv.append("--no-open")
+    return blackbar_web.main(argv)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="blackbar", description="Local PII anonymize/de-anonymize")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -201,6 +219,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("action", choices=["stats", "prune", "purge"], help="audit action")
     sp.add_argument("--yes", action="store_true", help="skip confirmation for purge")
     sp.set_defaults(func=cmd_audit)
+
+    sp = sub.add_parser("web", help="launch the local PII firewall web app")
+    sp.add_argument("--port", type=int, default=None, help="listen port (default 8765 or $BLACKBAR_WEB_PORT)")
+    sp.add_argument("--no-open", action="store_true", help="do not open the browser")
+    sp.set_defaults(func=cmd_web)
 
     return p
 

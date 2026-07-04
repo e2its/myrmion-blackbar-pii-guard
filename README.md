@@ -33,6 +33,7 @@
 **Set up your version**
 7. [Claude Code](#7-claude-code-automatic-protection)
 8. [Claude Desktop](#8-claude-desktop-on-demand-protection)
+   - [The web app (copy/paste firewall)](#the-web-app-local-copypaste-firewall)
 9. [Transparent proxy](#9-transparent-proxy-advanced-api-key)
 
 **Understand & troubleshoot**
@@ -160,6 +161,7 @@ There are two small pieces:
 | --- | --- | --- |
 | **Claude Code** (terminal or VS Code) | [Claude Code plugin](#7-claude-code-automatic-protection) | **Automatic** — censors what the AI reads, plus on-demand commands |
 | **Claude Desktop** (the app) | [Desktop extension](#8-claude-desktop-on-demand-protection) | **On-demand** — you ask "scan/anonymize this" |
+| **Claude Desktop / claude.ai, by copy-paste** | [The web app](#the-web-app-local-copypaste-firewall) | A localhost page: paste → anonymize → copy into Claude → paste the reply → restore |
 | **Claude Code with a developer API key** and you want it fully invisible | [Transparent proxy](#9-transparent-proxy-advanced-api-key) | You type/read normal text; the AI only sees censored text |
 | **Any website/app** (claude.ai, browser extension, Office) | the copy-paste helper (works on subscriptions) | Censor on copy, restore on paste — see [§10](#10-reversible-anonymization-explained-simply) |
 
@@ -332,6 +334,87 @@ it's reused automatically; Desktop has no such file, by design.)
 
 ---
 
+## The web app (local copy/paste firewall)
+
+**Best for:** anyone using **Claude Desktop**, **claude.ai**, or any chat box who wants a
+simple, friendly way to censor personal data by copy-and-paste — on a subscription, with no
+API key, and no change to how you use Claude.
+
+It's a small page that runs **only on your computer** (nothing is uploaded). Once it's set
+up, day-to-day use is four steps:
+
+1. **Paste** your prompt (or drag in a `.docx / .xlsx / .pdf / …` and it pulls out the text).
+2. Click **Anonymize** — the personal data turns into reversible `<ENC:…>` tokens, and the
+   safe version is copied to your clipboard for you.
+3. **Paste** it into Claude Desktop and chat as normal.
+4. **Paste** Claude's reply back into the app and click **Restore** — your real values return.
+
+![The Myrmion blackbar web app](assets/web-app.png)
+
+*The numbered cards match the four steps: ① your text → ② the safe, tokenized version (copied
+for you) → ③ paste Claude's reply → ④ the restored text. On the **left**, the session list —
+newest turn first, each stamped with its `date · time · timezone`; hover a turn to **archive**
+or **delete** it. Along the **top**: the detector and key status, the language, and the
+**Detect ▾** picker to choose which kinds of data to look for.*
+
+### Easiest: one command
+
+From the blackbar folder, run:
+
+```bash
+bin/blackbar-start
+```
+
+This starts the detector for you if it isn't already running — **the very first time it
+prepares one automatically** (a few minutes, once) — waits until it's ready, and opens the app
+in your browser at **http://127.0.0.1:8765**. Press **Ctrl-C** once to stop everything.
+
+The only setup left: the first time, click the **key** button at the top of the page and
+choose **Generate**. That's it.
+
+### Manual start (two windows)
+
+Prefer to run the pieces yourself (or you're on Windows without Git Bash)?
+
+1. **The detector.** Do [§6](#6-get-started-in-3-steps) above once, and **leave that window
+   open**. (Restoring text later doesn't need it, but anonymizing does.)
+2. **The app.** In a **new** terminal, from the blackbar folder:
+   ```bash
+   python3 web/blackbar_web.py
+   ```
+   Your browser opens by itself at **http://127.0.0.1:8765**. *(On Windows, type `python`.)*
+   Shortcuts that do the same: `bin/blackbar-web` or `bin/blackbar web`.
+3. **A key.** The first time only, click the **key** button at the top → **Generate**. Keep it
+   — without it, encrypted values can't be recovered.
+
+### What the screen shows
+
+- **Session list (left).** Every exchange is a **turn**, newest at the top, each stamped with
+  its `date · time · timezone`. You can **archive** (↓) or **delete** (✕) turns.
+- **Detect ▾.** Pick which kinds of data to look for in this turn (names, emails, IDs, health,
+  and so on). Leave it on **all** unless you want to narrow it down.
+- **Highlights & sensitivity.** Before you send, it shows exactly what it found so you can add
+  or remove items, and a slider lets you make detection stricter or looser.
+- **Restore diagnostics.** Because the app remembers the exact tokens it created, if Claude
+  changes one and a value doesn't come back, it tells you *which* one — and gives you the
+  correct token to paste again.
+- **Panic** wipes everything from memory instantly.
+
+### If something looks off
+
+- **"detector offline" (red dot).** The analyzer window isn't running — start it again
+  ([§6](#6-get-started-in-3-steps), Step 2). You can still **Restore**, just not **Anonymize**.
+- **"no key".** Click the key button at the top → **Generate**.
+- **A name isn't detected.** Open **Detect ▾** and make sure that type is ticked, nudge the
+  **sensitivity** slider down a little, or select the text and mark it by hand.
+
+Everything stays on your computer: your text and the key never leave your machine (the browser
+only ever sees a short *fingerprint* of the key, never the key itself). It uses the **same
+key** as the CLI/plugin/Desktop, so tokens are interchangeable. Technical details:
+[web/README.md](web/README.md).
+
+---
+
 ## 9. Transparent proxy (advanced, API key)
 
 **Best for:** technical users running Claude Code with a **developer API key** who want the
@@ -484,6 +567,8 @@ go to stderr, so pipes/clipboards stay clean. Key resolution order: `--key` →
 | `blackbar enc [text]` | `--key`, `--language` | text with `<ENC:…>` tokens | `encrypted N value(s): TYPES` |
 | `blackbar dec [text]` | `--key` | text with originals restored | `restored N token(s)` |
 | `blackbar keygen` | `--out`, `--force` | — | path of the new `0600` key file |
+| `blackbar audit` | `stats\|prune\|purge`, `--yes` | audit summary (JSON) | files affected |
+| `blackbar web` | `--port`, `--no-open` | — | launches the web app on `127.0.0.1:8765` |
 
 ```console
 $ blackbar scan --language es "me llamo Ada Lovelace y mi DNI es 12345678Z"
@@ -552,6 +637,10 @@ myrmion-blackbar-pii-guard/
 ├── bin/blackbar                      # universal enc/dec/scan/keygen CLI
 ├── desktop/                          # Claude Desktop extension (.mcpb) — Node MCP server
 ├── proxy/blackbar_proxy.py           # transparent streaming proxy (API key)
+├── web/                              # local PII "firewall" web app (copy/paste UI)
+│   ├── blackbar_web.py               # zero-dep http.server backend (bind 127.0.0.1)
+│   ├── extract.py · langdetect.py    # document text extraction · language autodetect
+│   └── static/                       # self-contained SPA (index.html, app.js, styles.css)
 └── docs/                             # architecture & clipboard recipes
 ```
 

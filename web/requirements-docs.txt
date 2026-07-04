@@ -1,0 +1,11 @@
+# OPTIONAL extra for the blackbar web app: PDF text extraction.
+#
+# The web app is zero-dependency for every other format (docx/xlsx/pptx/odt/ods/
+# csv/json/txt/md are read with the Python standard library). PDF is the sole
+# exception — it needs a real parser. Install this only if you want to drop PDFs
+# into the anonymizer:
+#
+#     pip install -r web/requirements-docs.txt
+#
+# Without it, every other format still works and PDF simply appears disabled.
+pypdf>=4.0

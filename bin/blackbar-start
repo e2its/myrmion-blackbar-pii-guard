@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# blackbar-start — ONE command to run the local PII firewall for Claude Desktop.
+#
+# It gets the detector (the local "analyzer") running if it isn't already, waits
+# until it's ready, then launches the web app — which opens your browser. Press
+# Ctrl-C once to stop everything this command started.
+#
+#   blackbar-start                 # opens http://127.0.0.1:8765
+#   blackbar-start --port 9000     # web app on a different port
+#   blackbar-start --no-open       # don't open a browser
+#
+# On the very first run (no detector set up yet) it prepares one automatically:
+# it uses Docker if you have it, otherwise it downloads the language models into
+# a local environment (a few minutes, once).
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+NATIVE_DIR="$ROOT/plugins/blackbar/presidio-native"
+COMPOSE="$ROOT/plugins/blackbar/docker-compose.yml"
+VENV="${BLACKBAR_VENV:-$HOME/.local/share/blackbar/presidio-venv}"
+ANALYZER_PORT="${ANALYZER_PORT:-5002}"
+LOG="${TMPDIR:-/tmp}/blackbar-detector.log"
+
+STARTED=""        # "", "native", or "docker": what WE started (for cleanup)
+ANALYZER_PID=""
+
+say() { printf '[blackbar-start] %s\n' "$*" >&2; }
+analyzer_up() { curl -fsS -m 2 "http://127.0.0.1:${ANALYZER_PORT}/health" >/dev/null 2>&1; }
+
+cleanup() {
+  case "$STARTED" in
+    native)
+      [ -n "$ANALYZER_PID" ] && kill "$ANALYZER_PID" 2>/dev/null && say "detector stopped." ;;
+    docker)
+      say "stopping the detector container…"
+      docker compose -f "$COMPOSE" down >/dev/null 2>&1 ;;
+  esac
+}
+trap cleanup EXIT INT TERM
+
+command -v python3 >/dev/null 2>&1 || { say "python3 is required but not found. See README §6."; exit 1; }
+command -v curl    >/dev/null 2>&1 || { say "curl is required but not found."; exit 1; }
+
+# ---------------------------------------------------------------------------
+# 1. The detector
+# ---------------------------------------------------------------------------
+start_native() {
+  say "starting the detector (native)… (log: $LOG)"
+  ( cd "$NATIVE_DIR" && ./run.sh ) >"$LOG" 2>&1 &
+  ANALYZER_PID=$!
+  STARTED="native"
+}
+
+if analyzer_up; then
+  say "detector already running on :$ANALYZER_PORT — using it."
+elif [ -x "$VENV/bin/python" ]; then
+  start_native
+elif command -v docker >/dev/null 2>&1 && [ -f "$COMPOSE" ]; then
+  say "starting the detector (Docker)…"
+  if docker compose -f "$COMPOSE" up -d >/dev/null 2>&1; then STARTED="docker"
+  else say "Docker could not start the detector. Try: docker compose -f \"$COMPOSE\" up"; exit 1; fi
+elif [ -x "$NATIVE_DIR/setup.sh" ]; then
+  say "first run: preparing the detector — this downloads language models and"
+  say "takes a few minutes. It only happens once."
+  if ( cd "$NATIVE_DIR" && ./setup.sh ); then start_native
+  else say "setup failed (see the messages above). Manual steps: README §6."; exit 1; fi
+else
+  say "couldn't find a way to start the detector. Follow README §6 once, then re-run."
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Wait until the detector is ready (first run loads models / pulls an image)
+# ---------------------------------------------------------------------------
+if ! analyzer_up; then
+  say "waiting for the detector to be ready…"
+  n=0
+  until analyzer_up; do
+    n=$((n + 1))
+    if [ "$n" -ge 300 ]; then say "the detector did not become ready in time (see $LOG)."; exit 1; fi
+    if [ "$STARTED" = "native" ] && [ -n "$ANALYZER_PID" ] && ! kill -0 "$ANALYZER_PID" 2>/dev/null; then
+      say "the detector stopped unexpectedly. Log: $LOG"; exit 1
+    fi
+    sleep 1
+  done
+fi
+say "detector ready. ✓"
+
+# ---------------------------------------------------------------------------
+# 3. The web app (foreground; opens your browser). Ctrl-C returns here → cleanup.
+# ---------------------------------------------------------------------------
+say "starting the web app…  (Ctrl-C stops everything)"
+python3 "$ROOT/web/blackbar_web.py" "$@"

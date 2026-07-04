@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="blackbar-csrf" content="__CSRF_TOKEN__">
+  <title>Blackbar — PII Firewall</title>
+  <link rel="icon" type="image/png" href="/myrmion-logo.png">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <!-- ------------------------------------------------------------------ -->
+  <!-- Top bar                                                             -->
+  <!-- ------------------------------------------------------------------ -->
+  <header class="topbar">
+    <div class="brand">
+      <img class="brand-mark" src="/myrmion-logo.png" alt="Myrmion" width="30" height="30">
+      <span class="brand-name">Myrmion <span class="brand-accent">blackbar</span></span>
+      <span class="brand-sub">PII firewall</span>
+    </div>
+    <div class="topbar-status">
+      <button id="analyzer-chip" class="chip" type="button" title="Detector status">
+        <span class="dot" id="analyzer-dot"></span>
+        <span id="analyzer-label">detector…</span>
+      </button>
+      <button id="key-chip" class="chip" type="button" title="Encryption key status">
+        <span class="dot" id="key-dot"></span>
+        <span id="key-label">key…</span>
+      </button>
+      <label class="lang-select" title="Detection language">
+        <span class="sr-only">Language</span>
+        <select id="lang-select">
+          <option value="auto">Auto</option>
+        </select>
+      </label>
+    </div>
+    <div class="topbar-actions">
+      <button id="btn-audit" class="btn btn-ghost" type="button" title="Audit trail">Audit</button>
+      <button id="btn-theme" class="btn btn-ghost" type="button" title="Toggle theme" aria-label="Toggle theme">◐</button>
+      <button id="btn-help" class="btn btn-ghost" type="button" title="Keyboard shortcuts" aria-label="Help">?</button>
+      <button id="btn-panic" class="btn btn-danger" type="button" title="Wipe everything from memory (Esc Esc)">⌫ Panic</button>
+    </div>
+  </header>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- Layout: sidebar + main                                              -->
+  <!-- ------------------------------------------------------------------ -->
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <span>Session</span>
+        <button id="btn-new-turn" class="btn btn-small" type="button" title="New turn (Ctrl/Cmd+N)">+ Turn</button>
+      </div>
+      <ol id="turn-list" class="turn-list"></ol>
+      <div class="privacy-note">
+        <span class="privacy-dot"></span>
+        <span id="privacy-text">Originals in memory only · 0 bytes to disk</span>
+      </div>
+      <div class="sidebar-tools">
+        <button id="btn-export" class="btn btn-ghost btn-block" type="button">Export tokens…</button>
+        <button id="btn-import" class="btn btn-ghost btn-block" type="button">Import…</button>
+        <input id="import-file" type="file" accept="application/json,.json" hidden>
+      </div>
+    </aside>
+
+    <main class="main">
+      <!-- Turn header -->
+      <div class="turn-header">
+        <h1 id="turn-title">Turn 1</h1>
+        <div class="turn-meta" id="turn-meta"></div>
+      </div>
+
+      <!-- Step 1: your text -->
+      <section class="step" id="step1">
+        <div class="step-head">
+          <span class="step-num">1</span>
+          <h2>Your text <span class="tag tag-mem">in memory only</span></h2>
+          <span class="step-hint">Type or paste a prompt, or drop a document.</span>
+        </div>
+        <div class="dropzone" id="dropzone">
+          <textarea id="input" class="ta ta-input" spellcheck="false"
+            placeholder="Paste a prompt with personal data here…&#10;e.g. Soy Ada Lovelace, DNI 12345678Z, ada@example.com"></textarea>
+          <div class="drop-overlay"><span>Drop a document to extract its text</span></div>
+        </div>
+        <div id="detect-summary" class="detect-summary"></div>
+        <details id="preview-details" class="preview-details" hidden>
+          <summary>Preview &amp; entity controls</summary>
+          <div class="preview-controls">
+            <label class="thresh">
+              Confidence ≥ <output id="thresh-out">0.50</output>
+              <input id="thresh" type="range" min="0" max="1" step="0.05" value="0.5">
+            </label>
+            <div id="legend" class="legend"></div>
+          </div>
+          <div id="preview" class="preview" aria-live="polite"></div>
+        </details>
+        <div class="step-actions">
+          <label class="op-select" title="Anonymization operator">
+            Operator
+            <select id="operator">
+              <option value="encrypt">encrypt (reversible)</option>
+              <option value="replace">replace (one-way)</option>
+              <option value="redact">redact (one-way)</option>
+              <option value="mask">mask (one-way)</option>
+              <option value="hash">hash (one-way)</option>
+            </select>
+          </label>
+          <span id="op-warning" class="op-warning" hidden>⚠ one-way — paste-back will restore nothing</span>
+          <label class="toggle"><input id="autocopy" type="checkbox" checked> auto-copy result</label>
+          <button id="btn-anon" class="btn btn-primary" type="button" title="Ctrl/Cmd+Enter">Anonymize ⏎</button>
+        </div>
+        <div id="smart-pill-1" class="smart-pill" hidden></div>
+      </section>
+
+      <!-- Step 2: safe to paste -->
+      <section class="step" id="step2">
+        <div class="step-head">
+          <span class="step-num">2</span>
+          <h2>Safe to paste into Claude <span class="tag tag-safe">tokens only</span></h2>
+          <div class="step-actions-inline">
+            <button id="btn-copy-anon" class="btn btn-small" type="button" disabled>⧉ Copy</button>
+            <button id="btn-copy-bt" class="btn btn-small" type="button" disabled title="Wrap tokens in backticks so the model keeps them verbatim">⧉ Copy + ` `</button>
+          </div>
+        </div>
+        <textarea id="anon" class="ta ta-token" spellcheck="false" readonly
+          placeholder="The anonymized text will appear here."></textarea>
+        <div id="selfcheck" class="selfcheck" hidden></div>
+        <div id="guardrail" class="guardrail" hidden>
+          <span>Tip: tell Claude to keep the <code>&lt;ENC:…&gt;</code> tokens verbatim so they restore cleanly.</span>
+          <button id="btn-guardrail" class="btn btn-small" type="button">⧉ Copy guardrail prompt</button>
+          <button id="btn-guardrail-x" class="btn btn-small btn-ghost" type="button" aria-label="Dismiss">✕</button>
+        </div>
+      </section>
+
+      <!-- Step 3: paste reply -->
+      <section class="step" id="step3">
+        <div class="step-head">
+          <span class="step-num">3</span>
+          <h2>Paste Claude's reply</h2>
+          <span class="step-hint">Then restore the real values.</span>
+        </div>
+        <textarea id="reply" class="ta ta-token" spellcheck="false"
+          placeholder="Paste Claude's response here (it may contain <ENC:…> tokens)."></textarea>
+        <div class="step-actions">
+          <button id="btn-decrypt" class="btn btn-primary" type="button" title="Ctrl/Cmd+Enter">Restore ⏎</button>
+        </div>
+        <div id="smart-pill-3" class="smart-pill" hidden></div>
+      </section>
+
+      <!-- Step 4: restored -->
+      <section class="step" id="step4">
+        <div class="step-head">
+          <span class="step-num">4</span>
+          <h2>Restored reply <span class="tag tag-mem">real PII</span></h2>
+          <div class="step-actions-inline">
+            <button id="btn-copy-restored" class="btn btn-small btn-pii" type="button" disabled>⧉ Copy</button>
+          </div>
+        </div>
+        <div id="integrity" class="integrity" hidden></div>
+        <textarea id="restored" class="ta ta-input" spellcheck="false" readonly
+          placeholder="The restored text will appear here."></textarea>
+      </section>
+    </main>
+  </div>
+
+  <!-- Audit panel -->
+  <dialog id="audit-dialog" class="dialog">
+    <form method="dialog">
+      <div class="dialog-head"><h2>Audit trail</h2><button class="btn btn-small btn-ghost" value="close">✕</button></div>
+      <div id="audit-body" class="dialog-body"></div>
+    </form>
+  </dialog>
+
+  <!-- Help panel -->
+  <dialog id="help-dialog" class="dialog">
+    <form method="dialog">
+      <div class="dialog-head"><h2>Shortcuts &amp; how it works</h2><button class="btn btn-small btn-ghost" value="close">✕</button></div>
+      <div class="dialog-body">
+        <table class="kbd-table">
+          <tr><td><kbd>Ctrl/Cmd</kbd>+<kbd>Enter</kbd></td><td>Process the focused box (anonymize / restore)</td></tr>
+          <tr><td><kbd>Ctrl/Cmd</kbd>+<kbd>N</kbd></td><td>New turn</td></tr>
+          <tr><td><kbd>Esc</kbd> <kbd>Esc</kbd></td><td>Panic — wipe everything from memory</td></tr>
+          <tr><td><kbd>?</kbd></td><td>This help</td></tr>
+        </table>
+        <p class="muted">The loop: type in <b>1</b> → <b>Anonymize</b> → copy <b>2</b> into Claude Desktop →
+        copy Claude's reply into <b>3</b> → <b>Restore</b> → read <b>4</b>. Only <b>encrypt</b> can be
+        restored. Your text and the key never leave this machine; the key never enters the browser.</p>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
