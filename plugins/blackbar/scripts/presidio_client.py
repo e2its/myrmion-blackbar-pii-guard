@@ -27,6 +27,8 @@ works identically from a hook, the MCP server, and the command-line tools.
 from __future__ import annotations
 
 import hashlib
+import hmac
+import http.client
 import json
 import os
 import urllib.error
@@ -34,6 +36,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+import bb_key
 import pii_audit
 
 
@@ -103,8 +106,11 @@ class PresidioClient:
             raw = self._analyze_service(text, decision)
         spans = [s for s in raw if s.score >= self.cfg.threshold]
         if decision:
-            redacted = _apply_operator(text, spans, self.cfg.operator) if spans else text
-            pii_audit.record(text, spans, self.source, self.cfg, redacted)
+            try:  # audit-only work: a failure here never blocks detection
+                redacted = _apply_operator(text, spans, self.cfg.operator) if spans else text
+                pii_audit.record(text, spans, self.source, self.cfg, redacted)
+            except Exception as exc:
+                pii_audit.warn_once(exc)
         return spans
 
     def redact(self, text: str) -> tuple[str, list[Span]]:
@@ -168,20 +174,29 @@ class PresidioClient:
         try:
             with urllib.request.urlopen(req, timeout=self.cfg.timeout) as resp:
                 results = json.loads(resp.read().decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException) as exc:
             raise PresidioUnavailable(
                 f"Presidio analyzer unreachable at {self.cfg.analyzer_url}: {exc}"
             ) from exc
-        return [
-            Span(
-                r["entity_type"],
-                int(r["start"]),
-                int(r["end"]),
-                float(r.get("score", 1.0)),
-                r.get("analysis_explanation"),
-            )
-            for r in results
-        ]
+        except ValueError as exc:  # not JSON (an HTML error page, a truncated body)
+            raise PresidioUnavailable(
+                f"Presidio analyzer at {self.cfg.analyzer_url} sent an unreadable reply"
+            ) from exc
+        try:
+            return [
+                Span(
+                    r["entity_type"],
+                    int(r["start"]),
+                    int(r["end"]),
+                    float(r.get("score", 1.0)),
+                    r.get("analysis_explanation"),
+                )
+                for r in results
+            ]
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            raise PresidioUnavailable(
+                f"Presidio analyzer at {self.cfg.analyzer_url} sent an unexpected reply"
+            ) from exc
 
     # -- library backend --------------------------------------------------- #
     def _analyze_library(self, text: str, decision_process: bool = False) -> list[Span]:
@@ -235,7 +250,9 @@ def _replacement(original: str, entity_type: str, operator: str) -> str:
             return "*" * len(original)
         return "*" * (len(original) - 4) + original[-4:]
     if operator == "hash":
-        digest = hashlib.sha256(original.encode("utf-8")).hexdigest()[:10]
+        # Keyed with the local salt: a bare SHA-256 of a DNI is reversed by
+        # hashing the ~10^8 candidates.
+        digest = hmac.new(bb_key.local_salt(), original.encode("utf-8"), hashlib.sha256).hexdigest()[:16]
         return f"<{entity_type}:{digest}>"
     # default: "replace"
     return f"<{entity_type}>"

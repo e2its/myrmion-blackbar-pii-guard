@@ -16,10 +16,11 @@ Per-event behaviour (all configurable via env vars):
                     * egress tools (WebFetch / WebSearch): PII in a URL or query
                       would leave the machine, so we ask or deny. Never decrypt.
                       PRESIDIO_GUARD_EGRESS_POLICY = ask | block | warn | off (ask)
-                    * local tools (Bash / Write / Edit / ...): optionally decrypt
+                    * local tools (Write / Edit / Grep / ...): optionally decrypt
                       <ENC:...> tokens in the tool input via updatedInput, so
                       actions built from encrypted results use the real values
                       locally. Pairs with RESULT_MODE=encrypt; needs a key.
+                      Never Bash: a command can reach the network.
                       PRESIDIO_GUARD_INPUT_DECRYPT = on | off            (off)
 
   PostToolUse       scrub PII inside the tool RESULT before the model sees it,
@@ -36,9 +37,10 @@ Per-event behaviour (all configurable via env vars):
   MessageDisplay    redact PII from the on-screen assistant text (display only).
                     PRESIDIO_GUARD_DISPLAY_REDACTION = on | off         (off)
 
-If Presidio is unreachable we FAIL OPEN by default (work continues) but surface
-a one-line systemMessage so you know redaction is inactive. Set
-PRESIDIO_GUARD_FAIL = closed to block instead.
+If Presidio is unreachable we FAIL CLOSED by default: a prompt or an outbound
+request is blocked, and a tool result is withheld from the model (replaced by a
+notice). Set PRESIDIO_GUARD_FAIL = open to let work continue unredacted, with a
+one-line systemMessage saying redaction is inactive.
 """
 
 from __future__ import annotations
@@ -48,17 +50,24 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import bb_crypto  # noqa: E402
-import bb_key  # noqa: E402
-import pii_audit  # noqa: E402
-from presidio_client import (  # noqa: E402
-    PresidioClient,
-    PresidioUnavailable,
-    Span,
-    _resolve_overlaps,
-)
+try:
+    import bb_crypto  # noqa: E402
+    import bb_key  # noqa: E402
+    import pii_audit  # noqa: E402
+    from presidio_client import (  # noqa: E402
+        PresidioClient,
+        PresidioUnavailable,
+        Span,
+        _resolve_overlaps,
+    )
+    _IMPORT_ERROR: Exception | None = None
+except Exception as _exc:  # e.g. PRESIDIO_GUARD_TIMEOUT=8s: still fail closed
+    _IMPORT_ERROR = _exc
 
 EGRESS_TOOLS = {"WebFetch", "WebSearch"}
+# Tools whose input stays on this machine. Bash is excluded on purpose: a
+# command such as curl would carry the decrypted values off the machine.
+LOCAL_DECRYPT_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit", "Grep", "Glob"}
 
 
 def _env(name: str, default: str) -> str:
@@ -76,13 +85,32 @@ def _summary(spans: list[Span]) -> str:
     return ", ".join(types)
 
 
-def _fail(message: str) -> None:
-    """Handle a Presidio outage according to the fail mode."""
-    if _env("PRESIDIO_GUARD_FAIL", "open") == "closed":
-        sys.stderr.write(f"[blackbar] blocked: {message}")
-        sys.exit(2)
-    _emit({"systemMessage": f"blackbar inactive: {message}"})
-    sys.exit(0)
+def _fail(event: str, message: str) -> None:
+    """Handle a Presidio outage according to the fail mode (closed by default)."""
+    if _env("PRESIDIO_GUARD_FAIL", "closed") == "open" or event == "MessageDisplay":
+        _emit({"systemMessage": f"blackbar inactive: {message}"})
+        sys.exit(0)
+    hint = (
+        "Start the Presidio analyzer (see the blackbar README) or set "
+        "PRESIDIO_GUARD_FAIL=open to continue without redaction."
+    )
+    if event == "PostToolUse":
+        # The tool already ran; exit 2 would not keep its output from the model.
+        _emit(
+            {
+                "suppressOutput": True,
+                "hookSpecificOutput": {
+                    "hookEventName": "PostToolUse",
+                    "updatedToolOutput": (
+                        f"[blackbar] tool result withheld: PII redaction is "
+                        f"unavailable ({message}). {hint}"
+                    ),
+                },
+            }
+        )
+        sys.exit(0)
+    sys.stderr.write(f"[blackbar] blocked: {message}. {hint}")
+    sys.exit(2)
 
 
 # --------------------------------------------------------------------------- #
@@ -128,7 +156,7 @@ def handle_pre_tool_use(data: dict, client: PresidioClient) -> None:
     tool = data.get("tool_name", "")
     if tool in EGRESS_TOOLS:
         _egress_guard(data, client, tool)
-    else:
+    elif tool in LOCAL_DECRYPT_TOOLS:
         _decrypt_tool_input(data, client, tool)
     sys.exit(0)
 
@@ -173,8 +201,9 @@ def _egress_guard(data: dict, client: PresidioClient, tool: str) -> None:
 def _decrypt_tool_input(data: dict, client: PresidioClient, tool: str) -> None:
     """Restore <ENC:...> tokens inside a LOCAL tool's input via updatedInput, so
     actions the model builds from encrypted results operate on the real values.
-    Opt-in (pairs with PRESIDIO_GUARD_RESULT_MODE=encrypt); never runs for
-    egress tools, so decrypted PII never leaves the machine."""
+    Opt-in (pairs with PRESIDIO_GUARD_RESULT_MODE=encrypt); runs only for
+    LOCAL_DECRYPT_TOOLS -- never egress tools nor Bash -- so decrypted PII
+    never leaves the machine."""
     if _env("PRESIDIO_GUARD_INPUT_DECRYPT", "off") != "on":
         return
     key = bb_key.resolve_key(None)
@@ -196,7 +225,8 @@ def _decrypt_tool_input(data: dict, client: PresidioClient, tool: str) -> None:
                 "updatedInput": updated,
                 "additionalContext": (
                     f"[blackbar] restored {count} encrypted value(s) into this "
-                    f"{tool} call locally (they stay on your machine)."
+                    f"{tool} call. The call runs locally, but anything it writes "
+                    "holds the real values."
                 ),
             }
         }
@@ -209,6 +239,19 @@ def handle_post_tool_use(data: dict, client: PresidioClient) -> None:
     response = data.get("tool_response", None)
     if response is None:
         sys.exit(0)
+
+    # Best effort: exact copies of blackbar's own secrets never reach the model
+    # in a result this hook redacts (not with redaction off or FAIL=open).
+    secrets = bb_key.known_secrets()
+
+    def _scrub(text: str) -> tuple[str, int]:
+        n = 0
+        for secret in secrets:
+            n += text.count(secret)
+            text = text.replace(secret, "<BLACKBAR_SECRET>")
+        return text, n
+
+    response, scrubbed = client.map_strings(response, _scrub) if secrets else (response, 0)
 
     # redact (one-way, default) or encrypt (reversible tokens) the tool result.
     mode = _env("PRESIDIO_GUARD_RESULT_MODE", "redact")
@@ -226,8 +269,9 @@ def handle_post_tool_use(data: dict, client: PresidioClient) -> None:
         note = (
             f"[blackbar] encrypted {count} PII value(s) in this tool result "
             "before you received it, as reversible <ENC:TYPE:...> tokens. "
-            "Restore them locally with /blackbar:decrypt or `blackbar dec` "
-            "(same key); do not attempt to guess the originals."
+            "The user can restore them locally with `blackbar dec` (same key); "
+            "/blackbar:decrypt would put the real values into this "
+            "conversation. Do not attempt to guess the originals."
         )
     else:
         if mode == "encrypt" and not key:
@@ -258,7 +302,9 @@ def handle_post_tool_use(data: dict, client: PresidioClient) -> None:
         else:
             pii_audit.record_op(client.source, client.cfg.operator, count)
 
-    if count == 0:
+    if scrubbed:
+        note += f" [blackbar] withheld {scrubbed} blackbar secret(s) as <BLACKBAR_SECRET>."
+    if count == 0 and scrubbed == 0:
         sys.exit(0)
     output = redacted if isinstance(redacted, str) else json.dumps(redacted)
     _emit(
@@ -307,13 +353,16 @@ def main() -> None:
         sys.exit(0)
     try:
         data = json.load(sys.stdin)
-    except (json.JSONDecodeError, ValueError):
-        sys.exit(0)  # malformed payload: never block on our own bug
-    client = PresidioClient(source=f"hook:{event}")
+    except Exception as exc:  # unreadable payload: closed too
+        _fail(event, f"unreadable hook payload ({type(exc).__name__})")
+    if _IMPORT_ERROR is not None:
+        _fail(event, f"configuration error ({type(_IMPORT_ERROR).__name__})")
     try:
-        handler(data, client)
+        handler(data, PresidioClient(source=f"hook:{event}"))
     except PresidioUnavailable as exc:
-        _fail(str(exc))
+        _fail(event, str(exc))
+    except Exception as exc:  # any other fault: closed, and no text in the message
+        _fail(event, f"internal error ({type(exc).__name__})")
 
 
 if __name__ == "__main__":

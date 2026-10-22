@@ -255,10 +255,11 @@ out: me llamo <PERSON> y mi DNI es <ES_NIF>
 **Censor — mask / hash**
 ```
 mask: card 4111 1111 1111 1111   →  card ***************1111
-hash: contact ada@example.com    →  contact <EMAIL_ADDRESS:b5fc85e557>
+hash: contact ada@example.com    →  contact <EMAIL_ADDRESS:3f9c1a0b7d2e4c61>
 ```
 (`mask` blanks the whole value keeping the last 4 characters; `hash` is a short
-deterministic digest of the original.)
+digest keyed with your local salt — the same value always gives the same digest
+on your machine, and nobody without the salt can reverse it by hashing guesses.)
 
 **Special-category data — on by default (Art. 9)**
 ```
@@ -275,7 +276,7 @@ out: <HEALTH_CONDITION> tipo 2 y es <RELIGIOUS_BELIEF>
 → patient Ada Lovelace, DNI 12345678Z
 ```
 
-*(Reversible mode needs a one-time key: run `bin/blackbar keygen`, or pass a key. More in
+*(Reversible mode needs a one-time key: run `bin/blackbar keygen` once. More in
 [§10](#10-reversible-anonymization-explained-simply).)*
 
 ---
@@ -296,7 +297,8 @@ app doesn't allow that for add-ons):
 ### Install
 
 1. Make sure the analyzer is running (steps in §6).
-2. In Claude Desktop: **Settings → Extensions → Install Extension…**, then choose the
+2. Download `blackbar.mcpb` from the [latest release](https://github.com/e2its/myrmion-blackbar-pii-guard/releases/latest).
+3. In Claude Desktop: **Settings → Extensions → Install Extension…**, then choose the
    `blackbar.mcpb` file (or drag it onto the window). Approve it.
 
 ### How to use it & examples
@@ -311,26 +313,27 @@ You: "Anonymize it."
 → me llamo <PERSON> y mi DNI es <ES_NIF>
 ```
 
-### Reversible on Desktop — you manage the key ⚠️
+### Reversible on Desktop — set the key once in the extension settings
 
-This is the key difference from Claude Code. The Desktop extension has **no key storage and
-keeps no mapping or "pairs" file** — the `<ENC:…>` token is *self-contained* (the value is
-encrypted inside it). So you must **give Claude a key when you encrypt and the same key when
-you decrypt**, and keep that key yourself:
+The `<ENC:…>` token is *self-contained* (the value is encrypted inside it) and the extension
+keeps no mapping file. The key lives in the extension settings (**Settings → Extensions →
+blackbar → Encryption key**), which Claude Desktop stores as a sensitive value. **Never type
+a key in the chat:** everything in the conversation is sent to the model provider, and a
+key there unlocks every token.
 
 ```
-You: "Encrypt the PII in this with key swordfish-42:
-      patient Ada Lovelace, DNI 12345678Z"
+You: "Encrypt the PII in this: patient Ada Lovelace, DNI 12345678Z"
 → patient <ENC:PERSON:…>, DNI <ENC:ES_NIF:…>
 
-You (later, even in a new chat): "Decrypt this with key swordfish-42:
-      patient <ENC:PERSON:…>, DNI <ENC:ES_NIF:…>"
+You (later, even in a new chat): "Decrypt this: patient <ENC:PERSON:…>, DNI <ENC:ES_NIF:…>"
 → patient Ada Lovelace, DNI 12345678Z
 ```
 
-If you lose the key, the values **cannot** be recovered — there is no stored copy anywhere.
-(In Claude Code and the CLI you can instead save the key once with `bin/blackbar keygen` and
-it's reused automatically; Desktop has no such file, by design.)
+Decrypting in the chat brings the originals back **as plaintext into the conversation** —
+do it only when the model may see them; otherwise decrypt locally with `bin/blackbar dec`.
+If you lose the key, the values **cannot** be recovered. To share tokens with Claude Code
+and the CLI, paste the contents of `~/.config/blackbar/key` (from `bin/blackbar keygen`)
+into the setting.
 
 ---
 
@@ -590,12 +593,12 @@ Thin wrappers that call the MCP tools and present the result in chat.
 | Command | Arguments | What it does |
 | --- | --- | --- |
 | `/blackbar:scan` | `[text or file]` | lists detected PII (→ `presidio_analyze`) |
-| `/blackbar:anonymize` | `[text] [--operator replace\|mask\|hash\|redact\|encrypt]` | returns a censored copy (→ `presidio_anonymize`); default `replace`; for `encrypt` it asks for a key first |
+| `/blackbar:anonymize` | `[text] [--operator replace\|mask\|hash\|redact\|encrypt]` | returns a censored copy (→ `presidio_anonymize`); default `replace`; `encrypt` uses the local key |
 | `/blackbar:decrypt` | `[text]` | restores `<ENC:…>` tokens (→ `presidio_decrypt`) with your key |
 
 #### C. MCP tools (Claude Code **and** Claude Desktop)
 
-Programmatic tools that return JSON. `key` is required only for `encrypt` / `decrypt`.
+Programmatic tools that return JSON. `encrypt` / `decrypt` read the local key; no tool takes a key argument.
 
 **`presidio_analyze(text, language?, entities?)`** — detect PII
 ```json
@@ -603,18 +606,18 @@ Programmatic tools that return JSON. `key` is required only for `encrypt` / `dec
   "entities": [ { "entity_type": "EMAIL_ADDRESS", "start": 8, "end": 23, "score": 1.0, "text": "ada@example.com" } ] }
 ```
 
-**`presidio_anonymize(text, operator?, language?, entities?, key?)`** — censor (default `operator` = `replace`)
+**`presidio_anonymize(text, operator?, language?, entities?)`** — censor (default `operator` = `replace`)
 ```json
 { "text": "me llamo <PERSON> y mi DNI es <ES_NIF>", "entities_found": ["ES_NIF", "PERSON"] }
 ```
-With `operator: "encrypt"` (requires `key`):
+With `operator: "encrypt"` (uses the local key — never a tool argument):
 ```json
 { "text": "patient <ENC:PERSON:ATG_…> DNI <ENC:ES_NIF:ATG_…>",
   "entities_found": ["ES_NIF", "PERSON"],
-  "note": "reversible: call presidio_decrypt with the same key" }
+  "note": "reversible: presidio_decrypt restores it with the local key" }
 ```
 
-**`presidio_decrypt(text, key)`** — restore encrypted values
+**`presidio_decrypt(text)`** — restore encrypted values with the local key (they come back as plaintext into the conversation)
 ```json
 { "text": "patient Ada Lovelace DNI 12345678Z", "restored": 2 }
 ```
@@ -659,10 +662,11 @@ myrmion-blackbar-pii-guard/
 | `PRESIDIO_GUARD_EGRESS_POLICY` | `ask`,`block`,`warn`,`off` | `ask` | outbound requests |
 | `PRESIDIO_GUARD_RESULT_REDACTION` | `on`,`off` | `on` | scrub tool results |
 | `PRESIDIO_GUARD_RESULT_MODE` | `redact`,`encrypt` | `redact` | one-way vs reversible |
-| `PRESIDIO_GUARD_INPUT_DECRYPT` | `on`,`off` | `off` | decrypt `<ENC:…>` in local tool inputs |
+| `PRESIDIO_GUARD_INPUT_DECRYPT` | `on`,`off` | `off` | decrypt `<ENC:…>` in local tool inputs (never Bash); files written this way hold the real values |
 | `PRESIDIO_GUARD_DISPLAY_REDACTION` | `on`,`off` | `off` | redact on-screen text |
-| `PRESIDIO_GUARD_FAIL` | `open`,`closed` | `open` | behavior if analyzer is down |
+| `PRESIDIO_GUARD_FAIL` | `open`,`closed` | `closed` | behavior if analyzer is down or blackbar errors |
 | `BLACKBAR_KEY` / `BLACKBAR_KEY_FILE` | string / path | — / `~/.config/blackbar/key` | key for `encrypt` & CLI |
+| `BLACKBAR_SALT` | string | random, kept in `~/.config/blackbar/salt` | salt for the `hash` operator and audit fingerprints |
 
 ### Analyzer settings
 

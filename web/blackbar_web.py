@@ -69,7 +69,7 @@ from presidio_client import (  # noqa: E402
 import extract  # noqa: E402  (web/extract.py)
 import langdetect  # noqa: E402  (web/langdetect.py)
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 STATIC_DIR = os.path.join(HERE, "static")
 DEFAULT_PORT = int(os.environ.get("BLACKBAR_WEB_PORT", "8765"))
 MAX_BODY = int(os.environ.get("BLACKBAR_WEB_MAX_BODY", str(8 * 1024 * 1024)))

@@ -28,7 +28,7 @@
         ]
       },
       {
-        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit|Grep|Glob",
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Grep|Glob",
         "hooks": [
           {
             "type": "command",

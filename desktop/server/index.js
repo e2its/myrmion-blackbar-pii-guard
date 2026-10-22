@@ -24,15 +24,24 @@
  *   PRESIDIO_GUARD_THRESHOLD  default 0.5
  *   PRESIDIO_GUARD_ENTITIES   comma list, default all
  *   PRESIDIO_GUARD_TIMEOUT    seconds, default 8
+ *   BLACKBAR_KEY              encryption key (set from the extension settings,
+ *                             stored by Claude Desktop as a sensitive value).
+ *                             Never a tool argument: what the model is given
+ *                             reaches the provider.
+ *   BLACKBAR_SALT             salt for the one-way hash operator; default a
+ *                             random salt kept at ~/.config/blackbar/salt
  */
 
 "use strict";
 
 const readline = require("readline");
 const crypto = require("crypto");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 const PROTOCOL_VERSION = "2024-11-05";
-const SERVER_INFO = { name: "blackbar", version: "0.3.0" };
+const SERVER_INFO = { name: "blackbar", version: "0.3.1" };
 
 const CFG = {
   analyzerUrl: env("PRESIDIO_ANALYZER_URL", "http://localhost:5002"),
@@ -48,14 +57,64 @@ const CFG = {
 
 function env(name, def) {
   const v = process.env[name];
-  return v === undefined || v === "" ? def : v;
+  // An unset user_config field may arrive as the literal "${user_config.x}".
+  return v === undefined || v === "" || v.startsWith("${") ? def : v;
 }
+
+function resolveKey() {
+  return env("BLACKBAR_KEY", "").trim();
+}
+
+// Same resolution as bb_key.local_salt() in Python, so hashes match across surfaces.
+const MIN_SALT_BYTES = 16;
+
+function readSalt(file) {
+  let text;
+  try {
+    text = fs.readFileSync(file, "utf8").trim();
+  } catch (err) {
+    if (err.code === "ENOENT") return null;
+    throw err;
+  }
+  const salt = /^([0-9a-f]{2})*$/i.test(text) ? Buffer.from(text, "hex") : Buffer.alloc(0);
+  if (salt.length < MIN_SALT_BYTES) return Buffer.alloc(0); // present but unusable
+  if (process.platform !== "win32" && fs.statSync(file).mode & 0o077) fs.chmodSync(file, 0o600);
+  return salt;
+}
+
+function localSalt() {
+  const fromEnv = env("BLACKBAR_SALT", "");
+  if (fromEnv) return Buffer.from(fromEnv, "utf8");
+  const base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
+  const file = path.join(base, "blackbar", "salt");
+  let salt = readSalt(file);
+  if (salt && salt.length) return salt;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  // Temp file, then into place: a missing salt is linked (the first writer wins,
+  // a racer re-reads it); an unusable one is replaced atomically.
+  const tmp = path.join(path.dirname(file), `.salt.${process.pid}.${crypto.randomBytes(4).toString("hex")}`);
+  fs.writeFileSync(tmp, crypto.randomBytes(32).toString("hex"), { mode: 0o600, flag: "wx" });
+  try {
+    if (salt === null) fs.linkSync(tmp, file);
+    else fs.renameSync(tmp, file);
+  } catch (err) {
+    if (err.code !== "EEXIST" && !fs.existsSync(file)) fs.renameSync(tmp, file);
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
+  salt = readSalt(file);
+  if (!salt || !salt.length) throw new Error("cannot create a usable salt");
+  return salt;
+}
+
+const NO_KEY =
+  "no encryption key configured: set the Encryption key in the blackbar extension settings (Claude Desktop > Settings > Extensions).";
 
 const TOOLS = [
   {
     name: "presidio_analyze",
     description:
-      "Detect personally identifiable information (PII) in text using Microsoft Presidio. Returns each entity's type, character span, confidence score, and matched text.",
+      "Detect personally identifiable information (PII) in text using Microsoft Presidio. Returns each entity's type, character span, confidence score, and matched text. Warning: the matched values come back as plaintext into the conversation, which is sent to the model provider.",
     inputSchema: {
       type: "object",
       properties: {
@@ -73,7 +132,7 @@ const TOOLS = [
   {
     name: "presidio_anonymize",
     description:
-      "Return a copy of the text with PII removed using the chosen operator: replace (<EMAIL_ADDRESS>), redact (delete), mask (****1234), hash, or encrypt. Only encrypt is reversible: it emits self-contained <ENC:TYPE:...> tokens that presidio_decrypt turns back into the originals with the same key. The other operators are one-way.",
+      "Return a copy of the text with PII removed using the chosen operator: replace (<EMAIL_ADDRESS>), redact (delete), mask (****1234), hash, or encrypt. Only encrypt is reversible: it emits self-contained <ENC:TYPE:...> tokens that presidio_decrypt turns back into the originals with the key from the extension settings. The other operators are one-way.",
     inputSchema: {
       type: "object",
       properties: {
@@ -85,7 +144,6 @@ const TOOLS = [
         },
         language: { type: "string" },
         entities: { type: "array", items: { type: "string" } },
-        key: { type: "string", description: "Encryption key (required only for operator=encrypt)." },
       },
       required: ["text"],
     },
@@ -93,14 +151,13 @@ const TOOLS = [
   {
     name: "presidio_decrypt",
     description:
-      "Reverse a previous encrypt: find every <ENC:TYPE:...> token in the text and restore the original value using the same key. Needs only the text and the key — no spans, no Presidio service. Tokens that fail to authenticate (wrong key or tampered) are left untouched.",
+      "Reverse a previous encrypt: find every <ENC:TYPE:...> token in the text and restore the original value with the key from the extension settings. No Presidio service needed. Tokens that fail to authenticate (wrong key or tampered) are left untouched. Warning: the restored values come back as plaintext into the conversation, which is sent to the model provider.",
     inputSchema: {
       type: "object",
       properties: {
         text: { type: "string", description: "Text containing <ENC:...> tokens to restore." },
-        key: { type: "string", description: "The same key used when the text was encrypted." },
       },
-      required: ["text", "key"],
+      required: ["text"],
     },
   },
 ];
@@ -170,7 +227,9 @@ function replacement(original, entityType, operator) {
         ? "*".repeat(original.length)
         : "*".repeat(original.length - 4) + original.slice(-4);
     case "hash": {
-      const digest = crypto.createHash("sha256").update(original).digest("hex").slice(0, 10);
+      // Keyed with the local salt: a bare SHA-256 of a DNI is reversed by
+      // hashing the ~10^8 candidates.
+      const digest = crypto.createHmac("sha256", localSalt()).update(original).digest("hex").slice(0, 16);
       return `<${entityType}:${digest}>`;
     }
     default:
@@ -275,7 +334,7 @@ function decryptValue(payload, key) {
 }
 
 function encryptText(text, spans, key) {
-  if (!key) return { error: "operator=encrypt requires a 'key'." };
+  if (!key) return { error: NO_KEY };
   const salt = crypto.randomBytes(SALT_LEN);
   let out = text;
   for (const s of resolveOverlaps(spans)) {
@@ -285,7 +344,7 @@ function encryptText(text, spans, key) {
   return {
     text: out,
     entities_found: [...new Set(spans.map((s) => s.entity_type))].sort(),
-    note: "reversible: call presidio_decrypt with the same key",
+    note: "reversible: presidio_decrypt restores it with the configured key",
   };
 }
 
@@ -322,9 +381,10 @@ async function toolAnalyze(args) {
 async function toolAnonymize(args) {
   const operator = args.operator || CFG.operator;
   const text = args.text || "";
+  if (operator === "encrypt" && !resolveKey()) return JSON.stringify({ error: NO_KEY }, null, 2);
   const spans = await analyze(text, args.language, args.entities);
   if (operator === "encrypt") {
-    return JSON.stringify(encryptText(text, spans, args.key || ""), null, 2);
+    return JSON.stringify(encryptText(text, spans, resolveKey()), null, 2);
   }
   const redacted = applyOperator(text, spans, operator);
   return JSON.stringify(
@@ -336,8 +396,8 @@ async function toolAnonymize(args) {
 
 function toolDecrypt(args) {
   const text = args.text || "";
-  const key = args.key || "";
-  if (!key) return JSON.stringify({ error: "presidio_decrypt requires a 'key'." }, null, 2);
+  const key = resolveKey();
+  if (!key) return JSON.stringify({ error: NO_KEY }, null, 2);
   return JSON.stringify(decryptText(text, key), null, 2);
 }
 
@@ -350,7 +410,9 @@ async function dispatchTool(name, args) {
     else return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
     return { content: [{ type: "text", text }] };
   } catch (err) {
-    const msg = err instanceof PresidioUnavailable ? `Presidio unavailable: ${err.message}` : String(err);
+    // Never echo arbitrary error text: it can carry input values or paths.
+    const msg =
+      err instanceof PresidioUnavailable ? `Presidio unavailable: ${err.message}` : `internal error (${err && err.name})`;
     return { content: [{ type: "text", text: msg }], isError: true };
   }
 }
@@ -407,4 +469,4 @@ function main() {
 // Run the server only when executed directly, so the crypto can be unit-tested.
 if (require.main === module) main();
 
-module.exports = { encryptValue, decryptValue, encryptText, decryptText };
+module.exports = { TOOLS, encryptValue, decryptValue, encryptText, decryptText, replacement, toolDecrypt };

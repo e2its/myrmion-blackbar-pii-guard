@@ -32,15 +32,22 @@ Env:
   BLACKBAR_KEY / _FILE     encryption key (see bb_key)
   PRESIDIO_GUARD_LANGUAGE  detection language       (default en)
   PRESIDIO_ANALYZER_URL    analyzer service         (default http://localhost:5002)
+  PRESIDIO_GUARD_FAIL      closed | open            (default closed)
+
+Fails closed: with no key, an unreachable analyzer or a body it cannot parse,
+a Messages request is answered 503/400 and never forwarded. Set
+PRESIDIO_GUARD_FAIL=open to forward it unmodified instead.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
-import urllib.request
 import urllib.error
+import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(
@@ -55,6 +62,16 @@ from presidio_client import (  # noqa: E402
     PresidioUnavailable,
     _resolve_overlaps,
 )
+
+# Routes whose body carries conversation text. The query string (Claude Code
+# sends ?beta=true) is not part of the route.
+MESSAGES_ROUTES = {"/v1/messages", "/v1/messages/count_tokens"}
+
+
+def _route(raw_path: str) -> str:
+    """Canonical route of a request path, so `//v1/%6dessages;x?y` is still scanned."""
+    path = urllib.parse.unquote(raw_path.split("?", 1)[0]).split(";", 1)[0]
+    return re.sub(r"/{2,}", "/", path).rstrip("/")
 
 UPSTREAM = os.environ.get("BLACKBAR_PROXY_UPSTREAM", "https://api.anthropic.com").rstrip("/")
 PORT = int(os.environ.get("BLACKBAR_PROXY_PORT", "8787"))
@@ -202,7 +219,7 @@ def transform_sse_event(event_text: str, decryptors: dict, key: str) -> str:
 # --------------------------------------------------------------------------- #
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "blackbar-proxy/0.1"
+    server_version = "blackbar-proxy/0.5.1"
 
     def log_message(self, *args):  # quiet by default
         pass
@@ -223,8 +240,17 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0") or "0")
         raw = self.rfile.read(length) if length else b""
 
-        if self.path.rstrip("/") != "/v1/messages":
-            return self._passthrough(raw)  # forward anything else untouched
+        fail_open = os.environ.get("PRESIDIO_GUARD_FAIL", "closed") == "open"
+        route = _route(self.path)
+        shown = route.encode("unicode_escape").decode("ascii")[:120] or "/"  # log-safe
+        if ";" in self.path or ".." in urllib.parse.unquote(self.path):
+            # The raw path is what reaches upstream: refuse what it could re-route.
+            return self._refuse(400, f"POST {shown}: ';' and '..' are not accepted; not forwarded")
+        if route not in MESSAGES_ROUTES:
+            if fail_open:
+                return self._passthrough(raw)
+            # A body the proxy does not know how to scan is never forwarded.
+            return self._refuse(403, f"POST {shown} is not scanned; not forwarded")
 
         key = bb_key.resolve_key(None)
         try:
@@ -232,15 +258,32 @@ class Handler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, UnicodeDecodeError):
             body = None
 
+        if not key and not fail_open:
+            return self._refuse(503, "no encryption key configured: run `blackbar keygen` or set BLACKBAR_KEY")
+        if key and not isinstance(body, dict) and not fail_open:
+            return self._refuse(400, "request body is not a JSON object; not forwarded unscanned")
         if key and isinstance(body, dict):
             try:
                 body = encrypt_request_body(body, key, self._client())
                 raw = json.dumps(body).encode("utf-8")
             except PresidioUnavailable as exc:
+                if not fail_open:
+                    return self._refuse(503, f"PII analyzer unavailable ({exc}); request not forwarded")
                 sys.stderr.write(f"[blackbar-proxy] analyzer down, forwarding as-is: {exc}\n")
 
         streaming = isinstance(body, dict) and bool(body.get("stream"))
         self._forward(raw, key, streaming)
+
+    def _refuse(self, status: int, message: str):
+        sys.stderr.write(f"[blackbar-proxy] refused: {message}\n")
+        msg = json.dumps(
+            {"type": "error", "error": {"type": "api_error", "message": f"blackbar-proxy: {message}"}}
+        ).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(msg)))
+        self.end_headers()
+        self.wfile.write(msg)
 
     def _open_upstream(self, raw: bytes):
         req = urllib.request.Request(
@@ -351,7 +394,8 @@ def main() -> None:
     if not key:
         sys.stderr.write(
             "[blackbar-proxy] WARNING: no key (BLACKBAR_KEY / `blackbar keygen`); "
-            "running as a plain pass-through with no encryption.\n"
+            "requests will be refused (503) until a key is set, or forwarded "
+            "unencrypted with PRESIDIO_GUARD_FAIL=open.\n"
         )
     sys.stderr.write(
         f"[blackbar-proxy] listening on http://localhost:{PORT} -> {UPSTREAM}\n"

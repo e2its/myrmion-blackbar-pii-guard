@@ -70,5 +70,14 @@ decrypted locally — streaming included.
 - MVP scope: it transforms text content. It does not yet rewrite PII the model
   emits inside *new* `tool_use` inputs, and assumes the upstream speaks the
   standard Messages API. No auth is added or removed — your key passes through.
-- If the analyzer is unreachable the request is forwarded **unmodified** (fail
-  open) with a stderr notice; set up monitoring if you need fail-closed.
+- Fails closed: with no key or an unreachable analyzer, a Messages request
+  (`/v1/messages`, its `?beta=true` form and `/v1/messages/count_tokens`) is
+  answered `503` and never forwarded; any other `POST` route is answered `403`,
+  because the proxy cannot scan it (this includes any other `POST` Claude Code
+  sends through `ANTHROPIC_BASE_URL`, such as batches). A path with `;` or `..`
+  is answered `400`. `PRESIDIO_GUARD_FAIL=open` forwards the first two
+  unmodified instead, with a stderr notice.
+
+| Variable | Values | Default | Effect |
+|---|---|---|---|
+| `PRESIDIO_GUARD_FAIL` | `open`, `closed` | `closed` | `closed` refuses what cannot be scanned; `open` forwards it unscanned |

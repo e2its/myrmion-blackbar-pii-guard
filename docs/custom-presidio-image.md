@@ -55,7 +55,7 @@ services:
   presidio-analyzer:
     image: e2its/presidio-analyzer-es:0.1.0   # was mcr.microsoft.com/presidio-analyzer:latest
     ports:
-      - "5002:3000"
+      - "127.0.0.1:5002:3000"
 ```
 
 Claude Desktop: set the **Presidio Analyzer URL** in the extension settings (it

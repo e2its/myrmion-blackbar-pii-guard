@@ -1,6 +1,6 @@
 {
   "name": "blackbar",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Presidio PII MCP server for Claude Desktop (zero-dependency Node).",
   "main": "server/index.js",
   "license": "MIT",

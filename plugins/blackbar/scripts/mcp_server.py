@@ -13,6 +13,10 @@ it needs no `mcp` SDK. PII detection reuses presidio_client (service or library
 mode). Encryption/decryption, if requested, uses the optional
 presidio-anonymizer library; otherwise the local operators are used.
 
+The encryption key is never a tool argument -- anything the model passes
+reaches the provider. It resolves locally through bb_key ($BLACKBAR_KEY or the
+key file written by `blackbar keygen`).
+
 Because this process is long-lived, library mode loads the spaCy model only
 once -- which is why detection here can afford library mode even though the
 per-invocation hooks prefer the HTTP service.
@@ -26,6 +30,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bb_crypto  # noqa: E402
+import bb_key  # noqa: E402
 import pii_audit  # noqa: E402
 from presidio_client import (  # noqa: E402
     Config,
@@ -36,7 +41,16 @@ from presidio_client import (  # noqa: E402
 )
 
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_INFO = {"name": "blackbar", "version": "0.5.0"}
+SERVER_INFO = {"name": "blackbar", "version": "0.5.1"}
+
+NO_KEY = (
+    "no encryption key configured: run `blackbar keygen` (writes "
+    "~/.config/blackbar/key) or set BLACKBAR_KEY."
+)
+PLAINTEXT_WARNING = (
+    " Warning: the values come back as plaintext into the conversation, "
+    "which is sent to the model provider."
+)
 
 TOOLS = [
     {
@@ -44,7 +58,7 @@ TOOLS = [
         "description": (
             "Detect personally identifiable information (PII) in text using "
             "Microsoft Presidio. Returns each entity's type, character span, "
-            "confidence score, and the matched text."
+            "confidence score, and the matched text." + PLAINTEXT_WARNING
         ),
         "inputSchema": {
             "type": "object",
@@ -67,7 +81,7 @@ TOOLS = [
             "operator: replace (<EMAIL_ADDRESS>), redact (delete), mask "
             "(****1234), hash, or encrypt. Only encrypt is reversible: it emits "
             "self-contained <ENC:TYPE:...> tokens that presidio_decrypt turns "
-            "back into the originals with the same key. The other operators are "
+            "back into the originals with the local key. The other operators are "
             "one-way."
         ),
         "inputSchema": {
@@ -81,10 +95,6 @@ TOOLS = [
                 },
                 "language": {"type": "string"},
                 "entities": {"type": "array", "items": {"type": "string"}},
-                "key": {
-                    "type": "string",
-                    "description": "Encryption key (required only for operator=encrypt).",
-                },
             },
             "required": ["text"],
         },
@@ -93,9 +103,9 @@ TOOLS = [
         "name": "presidio_decrypt",
         "description": (
             "Reverse a previous encrypt: find every <ENC:TYPE:...> token in the "
-            "text and restore the original value using the same key. Needs only "
-            "the text and the key — no spans, no Presidio service. Tokens that "
-            "fail to authenticate (wrong key or tampered) are left untouched."
+            "text and restore the original value with the local key. No "
+            "Presidio service needed. Tokens that fail to authenticate (wrong "
+            "key or tampered) are left untouched." + PLAINTEXT_WARNING
         ),
         "inputSchema": {
             "type": "object",
@@ -104,12 +114,8 @@ TOOLS = [
                     "type": "string",
                     "description": "Text containing <ENC:...> tokens to restore.",
                 },
-                "key": {
-                    "type": "string",
-                    "description": "The same key used when the text was encrypted.",
-                },
             },
-            "required": ["text", "key"],
+            "required": ["text"],
         },
     },
 ]
@@ -147,7 +153,7 @@ def tool_anonymize(args: dict) -> str:
     client = _client(args.get("language"), args.get("entities"), "mcp:presidio_anonymize")
 
     if operator == "encrypt":
-        return _anonymize_encrypt(client, text, args.get("key", ""))
+        return _anonymize_encrypt(client, text, bb_key.resolve_key(None))
 
     # Detect once, then apply the requested operator to those spans -- never
     # re-analyze (a second analyze() means a second service round-trip and a
@@ -164,9 +170,9 @@ def tool_anonymize(args: dict) -> str:
     )
 
 
-def _anonymize_encrypt(client: PresidioClient, text: str, key: str) -> str:
+def _anonymize_encrypt(client: PresidioClient, text: str, key: str | None) -> str:
     if not key:
-        return json.dumps({"error": "operator=encrypt requires a 'key'."})
+        return json.dumps({"error": NO_KEY})
     spans = client.analyze(text)
     # Apply right-to-left so earlier offsets stay valid as tokens change length.
     resolved = _resolve_overlaps(spans)
@@ -177,7 +183,7 @@ def _anonymize_encrypt(client: PresidioClient, text: str, key: str) -> str:
         {
             "text": encrypted,
             "entities_found": sorted({s.entity_type for s in spans}),
-            "note": "reversible: call presidio_decrypt with the same key",
+            "note": "reversible: presidio_decrypt restores it with the local key",
         },
         indent=2,
     )
@@ -185,9 +191,9 @@ def _anonymize_encrypt(client: PresidioClient, text: str, key: str) -> str:
 
 def tool_decrypt(args: dict) -> str:
     text = args.get("text", "")
-    key = args.get("key", "")
+    key = bb_key.resolve_key(None)
     if not key:
-        return json.dumps({"error": "presidio_decrypt requires a 'key'."})
+        return json.dumps({"error": NO_KEY})
     restored, count = bb_crypto.decrypt_text(text, key)
     if count:
         pii_audit.record_op("mcp:presidio_decrypt", "decrypt", count)
@@ -207,6 +213,8 @@ def _dispatch_tool(name: str, args: dict) -> dict:
         return {"content": [{"type": "text", "text": text}]}
     except PresidioUnavailable as exc:
         return {"content": [{"type": "text", "text": f"Presidio unavailable: {exc}"}], "isError": True}
+    except Exception as exc:  # never crash the server; never echo text or paths
+        return {"content": [{"type": "text", "text": f"internal error ({type(exc).__name__})"}], "isError": True}
 
 
 def _handle(msg: dict):

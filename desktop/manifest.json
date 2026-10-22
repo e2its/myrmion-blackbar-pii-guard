@@ -2,9 +2,9 @@
   "manifest_version": "0.3",
   "name": "blackbar",
   "display_name": "Myrmion blackbar",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "On-demand PII detection, anonymization, and reversible encryption with Microsoft Presidio.",
-  "long_description": "Adds three tools to Claude Desktop: presidio_analyze (find PII in text), presidio_anonymize (replace, mask, hash, redact, or reversibly encrypt it), and presidio_decrypt (restore values that were encrypted, with the same key). A zero-dependency Node server talks to a local Presidio Analyzer over HTTP; detection runs entirely on your machine and encryption uses Node's built-in crypto, so the bundle needs no extra install or anonymizer service. Note: this is the on-demand half of blackbar; the automatic redaction hooks only exist in Claude Code.",
+  "long_description": "Adds three tools to Claude Desktop: presidio_analyze (find PII in text), presidio_anonymize (replace, mask, hash, redact, or reversibly encrypt it), and presidio_decrypt (restore values that were encrypted, with the key from the extension settings). A zero-dependency Node server talks to a local Presidio Analyzer over HTTP; detection runs entirely on your machine and encryption uses Node's built-in crypto, so the bundle needs no extra install or anonymizer service. Note: this is the on-demand half of blackbar; the automatic redaction hooks only exist in Claude Code.",
   "author": { "name": "e2its" },
   "repository": { "type": "git", "url": "https://github.com/e2its/myrmion-blackbar-pii-guard.git" },
   "license": "MIT",
@@ -18,14 +18,15 @@
       "env": {
         "PRESIDIO_ANALYZER_URL": "${user_config.analyzer_url}",
         "PRESIDIO_GUARD_OPERATOR": "${user_config.default_operator}",
-        "PRESIDIO_GUARD_LANGUAGE": "${user_config.language}"
+        "PRESIDIO_GUARD_LANGUAGE": "${user_config.language}",
+        "BLACKBAR_KEY": "${user_config.encryption_key}"
       }
     }
   },
   "tools": [
     { "name": "presidio_analyze", "description": "Detect PII in text and return entity types, spans, and scores." },
     { "name": "presidio_anonymize", "description": "Return a copy of the text with PII replaced, masked, hashed, redacted, or reversibly encrypted." },
-    { "name": "presidio_decrypt", "description": "Restore values previously encrypted by presidio_anonymize, using the same key." }
+    { "name": "presidio_decrypt", "description": "Restore values previously encrypted by presidio_anonymize, with the key from the extension settings." }
   ],
   "compatibility": {
     "claude_desktop": ">=0.10.0",
@@ -35,6 +36,7 @@
   "user_config": {
     "analyzer_url": { "type": "string", "title": "Presidio Analyzer URL", "description": "Endpoint of your local Presidio Analyzer service.", "default": "http://localhost:5002", "required": false },
     "default_operator": { "type": "string", "title": "Default anonymization operator", "description": "replace, redact, mask, hash, or encrypt.", "default": "replace", "required": false },
-    "language": { "type": "string", "title": "Detection language", "description": "Language code such as en or es.", "default": "en", "required": false }
+    "language": { "type": "string", "title": "Detection language", "description": "Language code such as en or es.", "default": "en", "required": false },
+    "encryption_key": { "type": "string", "title": "Encryption key", "description": "Secret for the encrypt operator and presidio_decrypt. Stored securely by Claude Desktop and never sent to the model. Use the value of ~/.config/blackbar/key (blackbar keygen) to share tokens with Claude Code.", "sensitive": true, "required": false }
   }
 }
