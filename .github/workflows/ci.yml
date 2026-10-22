@@ -38,6 +38,9 @@ jobs:
       - name: Check Node server
         run: node --check desktop/server/index.js
 
+      - name: Security checks
+        run: python plugins/blackbar/scripts/test_security.py
+
       - name: Validate MCPB manifest (best effort)
         continue-on-error: true
         run: |

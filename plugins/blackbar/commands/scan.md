@@ -14,6 +14,9 @@ Steps:
 2. Call `presidio_analyze` with that text.
 3. Present the findings as a short table: entity type, the matched snippet, and
    the confidence score. Do not echo any value you weren't already shown.
+   Note to the user once: the scanned text and the matched values are part of
+   this conversation, which is sent to the model provider — to scan without
+   that, use `blackbar scan` locally.
 4. If nothing is found, say so plainly.
 
 If the MCP tool is unavailable, tell the user the Presidio analyzer service or

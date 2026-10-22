@@ -22,7 +22,8 @@ Plus an MCP server with `presidio_analyze`, `presidio_anonymize`, and
 The `encrypt` operator is reversible and **needs no extra dependencies**: it
 emits self-contained `<ENC:TYPE:...>` tokens (a salt, nonce, ciphertext, and
 HMAC tag, all base64url) using only the Python standard library, and
-`presidio_decrypt` restores them with the same key. The same token format is
+`presidio_decrypt` restores them with the local key (`BLACKBAR_KEY` or the
+`blackbar keygen` file — never a tool argument). The same token format is
 shared with the Claude Desktop server, so a value encrypted in one decrypts in
 the other.
 
@@ -131,19 +132,21 @@ All behavior is controlled by environment variables:
 | `PRESIDIO_GUARD_ENTITIES` | comma list | (all) | Restrict to specific entity types |
 | `PRESIDIO_GUARD_PROMPT_POLICY` | `warn`, `block`, `off` | `warn` | Prompt boundary behavior |
 | `PRESIDIO_GUARD_EGRESS_POLICY` | `ask`, `block`, `warn`, `off` | `ask` | Outbound request behavior (WebFetch/WebSearch) |
-| `PRESIDIO_GUARD_INPUT_DECRYPT` | `on`, `off` | `off` | Decrypt `<ENC:…>` tokens in **local** tool inputs (Bash/Write/Edit/…) so actions use real values; never for egress tools. Pairs with `encrypt` mode. |
+| `PRESIDIO_GUARD_INPUT_DECRYPT` | `on`, `off` | `off` | Decrypt `<ENC:…>` tokens in **local** tool inputs (Write/Edit/Grep/…) so actions use real values; never for egress tools nor Bash (a command can reach the network). Pairs with `encrypt` mode. Files written this way hold the real values. |
 | `PRESIDIO_GUARD_RESULT_REDACTION` | `on`, `off` | `on` | Scrub tool results before the model sees them |
 | `PRESIDIO_GUARD_RESULT_MODE` | `redact`, `encrypt` | `redact` | `redact` = one-way placeholders; `encrypt` = reversible `<ENC:…>` tokens (needs a key) |
 | `BLACKBAR_KEY` / `BLACKBAR_KEY_FILE` | string / path | — / `~/.config/blackbar/key` | Session key for `encrypt` mode and the `blackbar` CLI. Create one with `blackbar keygen`. |
 | `PRESIDIO_GUARD_DISPLAY_REDACTION` | `on`, `off` | `off` | Redact on-screen text |
-| `PRESIDIO_GUARD_FAIL` | `open`, `closed` | `open` | Behavior when Presidio is unreachable |
+| `PRESIDIO_GUARD_FAIL` | `open`, `closed` | `closed` | Behavior when Presidio is unreachable |
 | `BLACKBAR_AUDIT_ENABLED` | `1`/`true`/`on`, off | off | Write a PII-safe audit record for every detector call |
 | `BLACKBAR_AUDIT_DIR` | path | `$XDG_DATA_HOME/blackbar/audit` | Where audit day-files are stored |
 | `BLACKBAR_AUDIT_RETENTION_DAYS` | integer | `90` | Days to keep audit files; `<=0` keeps them forever |
-| `PII_AUDIT_SALT` | string | — | Secret salt for fingerprints — **set a real secret in production** |
+| `BLACKBAR_SALT` | string | random, kept at `~/.config/blackbar/salt` (0600) | Secret salt for the `hash` operator and audit fingerprints |
+| `PII_AUDIT_SALT` | string | `BLACKBAR_SALT` | Overrides the salt for audit fingerprints only |
 
-`fail=open` keeps you working (with a one-line notice) if the analyzer is down;
-`fail=closed` blocks instead — choose based on your risk posture.
+`fail=closed` (default) blocks prompts and outbound requests and withholds tool
+results from the model while the analyzer is down; `fail=open` keeps you working
+unredacted, with a one-line notice — choose based on your risk posture.
 
 ## Audit trail (opt-in)
 
@@ -164,7 +167,8 @@ Records carry an `event` field:
 The log is designed so it can never be the leak: it stores a salted SHA-256
 **fingerprint** of the input (correlate identical inputs without keeping them),
 the redacted text, and each entity's type/score/span — **never the raw PII**.
-Set `PII_AUDIT_SALT` to a real secret kept in your secrets manager, not in code.
+The salt is a random local secret generated on first use (`BLACKBAR_SALT` or
+`PII_AUDIT_SALT` override it); there is no shared default.
 
 Each entity also records *why* it was detected — the Presidio **recognizer** and
 named **pattern** (e.g. `EmailRecognizer` / `Email (Medium)`, or `SpacyRecognizer`
@@ -229,7 +233,7 @@ you can choose your posture deliberately.
 | **Your prompt** | `warn` | **Yes.** A hook cannot rewrite a prompt; `warn` only adds a note. Only `block` stops it — by rejecting the whole prompt. |
 | **Tool results from `Read`/`Bash`/`WebFetch`/`Grep`/`Glob`** | redacted/encrypted | **No** (while the analyzer is reachable). |
 | **Tool results from other tools** (`Edit`, `Write`, MCP tools, `Task`/subagents…) | not intercepted | **Yes.** `PostToolUse` only matches the five tools above. |
-| **Analyzer unreachable** | `fail=open` | **Yes.** Results pass unredacted (with a one-line notice) unless `fail=closed`. |
+| **Analyzer unreachable** | `fail=closed` | **No.** Prompts and outbound requests are blocked; covered tool results are withheld. With `fail=open` they pass unredacted (with a one-line notice). |
 | **Anything Presidio misses** | — | **Yes.** Only *detected* spans are removed; recall is high, not perfect. |
 
 So PII detected in a covered tool result, with `:5002` up, does **not** reach the
@@ -242,18 +246,31 @@ can.
 | --- | --- | --- |
 | `PRESIDIO_GUARD_PROMPT_POLICY=warn` | Prompt passes; Claude is told to treat it as sensitive. | PII still reaches the model. |
 | `PRESIDIO_GUARD_PROMPT_POLICY=block` | The **entire prompt** is rejected (`suppressOriginalPrompt`); you get the detected entity *types* and must rewrite and resubmit. Nothing is auto-redacted. | High friction: Presidio's false positives (names, URLs, locations in ordinary text) block normal prompts. |
+| `PRESIDIO_GUARD_FAIL=closed` (default) | On analyzer outage, the action is blocked and covered tool results are withheld. | If `:5002` is down you cannot submit prompts or use matched tools' results. |
 | `PRESIDIO_GUARD_FAIL=open` | On analyzer outage, work continues unredacted with a notice. | A detector outage = a redaction gap. |
-| `PRESIDIO_GUARD_FAIL=closed` | On analyzer outage, the action is blocked. | If `:5002` is down you cannot submit prompts or run matched tools. |
 | `PRESIDIO_GUARD_RESULT_MODE=encrypt` | Covered tool results reach the model as reversible `<ENC:…>` tokens instead of placeholders. | Needs a key; changes *how* PII is hidden, not *which paths* are covered. |
 
 ### Tightening the net (opt-in, still not a certificate)
 
-To close the structural gaps — at the cost above — you would: set
+To close the structural gaps — at the cost above — you would: keep
 `PRESIDIO_GUARD_FAIL=closed`, set `PRESIDIO_GUARD_PROMPT_POLICY=block`, broaden
 the `PostToolUse` matcher in `hooks/hooks.json` to cover more tools (`Edit`,
 `Write`, MCP, `Task`…), and raise recall (`BLACKBAR_MODEL_SIZE=lg`, a lower
 `PRESIDIO_GUARD_THRESHOLD`, the right languages). Even then it covers the *known*
 paths, not "100%".
+
+blackbar also replaces exact copies of its own secrets (the key,
+`BLACKBAR_SALT`, `PII_AUDIT_SALT`, the salt file; 8 characters or more) with
+`<BLACKBAR_SECRET>` in the tool results it redacts. This is best effort: an
+encoded copy (`base64`, `xxd`) passes, and so does anything with redaction off
+or `PRESIDIO_GUARD_FAIL=open`. Deny the folder to the file tools:
+
+```json
+{ "permissions": { "deny": ["Read(~/.config/blackbar/**)"] } }
+```
+
+That rule does not stop a shell command such as `cat`. To keep shell commands
+out of the folder too, run Claude Code in its sandbox.
 
 ## Test it without Claude
 

@@ -15,23 +15,25 @@ This plugin wraps Microsoft Presidio. Three tools are available from the
 
 - `presidio_analyze(text, language?, entities?)` — detects PII and returns each
   entity's type, span, score, and matched text.
-- `presidio_anonymize(text, operator?, language?, entities?, key?)` — returns a
+- `presidio_anonymize(text, operator?, language?, entities?)` — returns a
   transformed copy. Operators: `replace` (default, `<EMAIL_ADDRESS>`), `redact`
   (delete), `mask` (`****1234`), `hash`, and `encrypt`. Only `encrypt` is
-  reversible: it emits self-contained `<ENC:TYPE:...>` tokens and requires a
-  `key`. The rest are one-way.
-- `presidio_decrypt(text, key)` — restores every `<ENC:TYPE:...>` token in the
-  text back to its original value using the same key. Needs only the text and
-  the key (no spans, no Presidio service). Tokens that fail to authenticate
-  (wrong key or tampered) are left untouched, never guessed.
+  reversible: it emits self-contained `<ENC:TYPE:...>` tokens with the local
+  key (`BLACKBAR_KEY` or the `blackbar keygen` file). The rest are one-way.
+- `presidio_decrypt(text)` — restores every `<ENC:TYPE:...>` token in the
+  text back to its original value with the local key (no spans, no Presidio
+  service). Tokens that fail to authenticate (wrong key or tampered) are left
+  untouched, never guessed. The restored values come back as plaintext into
+  the conversation, which is sent to the model provider.
+- Never ask the user to type a key in the chat, and never pass one to a tool.
 
 ## When to use which
 
 - "Is there any personal data in this?" → `presidio_analyze`, then summarize.
 - "Clean this up before I share it" → `presidio_anonymize` with `replace` or
   `mask`.
-- "I need to re-identify later" → `presidio_anonymize` with `encrypt` and a key
-  the user controls; restore with `presidio_decrypt` and the same key.
+- "I need to re-identify later" → `presidio_anonymize` with `encrypt`; restore
+  with `presidio_decrypt` (same local key) or locally with `blackbar dec`.
 - Bulk files / datasets → read the content, analyze in chunks, then anonymize.
 
 ## Reversible encrypt / decrypt
@@ -39,10 +41,13 @@ This plugin wraps Microsoft Presidio. Three tools are available from the
 `encrypt` replaces each value with a `<ENC:TYPE:base64>` token that embeds
 everything needed to reverse it (a salt, a nonce, the ciphertext, and an
 authentication tag) — so the only thing you must keep is the key. The same
-token round-trips between Claude Code and Claude Desktop. To restore, pass the
-encrypted text and the key to `presidio_decrypt`. A wrong key cannot corrupt the
-data: mismatched tokens are returned unchanged. Always ask the user for the key
-rather than inventing one, and never persist it.
+token round-trips between Claude Code and Claude Desktop. The key is local
+configuration (`BLACKBAR_KEY` or `~/.config/blackbar/key`; in Claude Desktop the
+extension's *Encryption key* setting) and never travels through the chat: never
+request it, never accept one typed into the conversation, never persist it.
+Prefer that the user restores tokens locally with `blackbar dec`;
+`presidio_decrypt` puts the real values into the conversation. A wrong key
+cannot corrupt the data: mismatched tokens are returned unchanged.
 
 ## Behavioral rules
 

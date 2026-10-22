@@ -34,7 +34,7 @@ Configuration (all via environment variables)
   BLACKBAR_AUDIT_ENABLED          off unless "1"/"true"/"on"/"yes"   (off)
   BLACKBAR_AUDIT_DIR              audit directory      ($XDG_DATA_HOME/blackbar/audit)
   BLACKBAR_AUDIT_RETENTION_DAYS   days to keep; <=0 means keep forever      (90)
-  PII_AUDIT_SALT                  salt for the fingerprint (set a real secret!)
+  PII_AUDIT_SALT                  fingerprint salt (default: blackbar's local salt)
 
 CLI (lifecycle management)
 --------------------------
@@ -53,6 +53,8 @@ import sys
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
+
+import bb_key
 
 try:
     import fcntl  # POSIX file locking; absent on Windows
@@ -101,7 +103,8 @@ def retention_days() -> int:
 
 
 def _salt() -> bytes:
-    return os.environ.get("PII_AUDIT_SALT", "blackbar-change-this-salt").encode("utf-8")
+    env = os.environ.get("PII_AUDIT_SALT")
+    return env.encode("utf-8") if env else bb_key.local_salt()
 
 
 def fingerprint(text: str) -> str:
@@ -157,7 +160,7 @@ def _emit(rec: dict) -> None:
                     if fcntl is not None:
                         fcntl.flock(f.fileno(), fcntl.LOCK_UN)
     except Exception as exc:
-        _warn_once(exc)
+        warn_once(exc)
 
 
 def record(text: str, spans: Iterable[Any], source: str, cfg: Any, redacted: str) -> None:
@@ -165,10 +168,15 @@ def record(text: str, spans: Iterable[Any], source: str, cfg: Any, redacted: str
     if not enabled():
         return
     spans = list(spans)
+    try:
+        fp = fingerprint(text)
+    except Exception as exc:  # no usable salt: skip the record, keep detecting
+        warn_once(exc)
+        return
     _emit({
         "event": "detect",
         "source": source,
-        "fingerprint": fingerprint(text),
+        "fingerprint": fp,
         "lang": getattr(cfg, "language", None),
         "mode": getattr(cfg, "mode", None),
         "operator": getattr(cfg, "operator", None),
@@ -216,7 +224,7 @@ def record_op(
     _emit(rec)
 
 
-def _warn_once(exc: Exception) -> None:
+def warn_once(exc: Exception) -> None:
     global _warned
     if _warned:
         return

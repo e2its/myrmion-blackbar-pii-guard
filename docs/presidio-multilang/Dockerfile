@@ -4,7 +4,7 @@
 #   docker build -t e2its/presidio-analyzer-multilang:latest .
 #   # smaller/faster image (medium models, ~50 MB each instead of ~500 MB):
 #   docker build --build-arg MODEL_SIZE=md -t e2its/presidio-analyzer-multilang:md .
-#   docker run -d -p 5002:3000 e2its/presidio-analyzer-multilang:latest
+#   docker run -d -p 127.0.0.1:5002:3000 e2its/presidio-analyzer-multilang:latest
 #
 FROM mcr.microsoft.com/presidio-analyzer:latest
 
@@ -25,5 +25,6 @@ ENV BLACKBAR_MODEL_SIZE=${MODEL_SIZE}
 COPY patch_conf.py /tmp/patch_conf.py
 RUN python /tmp/patch_conf.py
 
-# Note: this image runs the analyzer as root for simplicity. It is meant to run
-# locally on your own machine; harden the user/permissions before any shared use.
+# Root was needed only to install models and patch the config; the analyzer
+# runs as the base image's unprivileged user.
+USER 1001

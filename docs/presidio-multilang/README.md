@@ -35,7 +35,7 @@ docker compose up --build -d
 # OR a much smaller image (medium models): edit MODEL_SIZE: md in
 # docker-compose.yml, or build directly:
 docker build --build-arg MODEL_SIZE=md -t e2its/presidio-analyzer-multilang:md .
-docker run -d -p 5002:3000 e2its/presidio-analyzer-multilang:md
+docker run -d -p 127.0.0.1:5002:3000 e2its/presidio-analyzer-multilang:md
 ```
 
 The first build is slow (downloading models). After that it's cached.
